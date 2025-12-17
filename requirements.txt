@@ -1,0 +1,4 @@
+# Dependencias del proyecto GESTAR
+streamlit
+pandas
+
