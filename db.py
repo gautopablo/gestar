@@ -4,8 +4,9 @@
 
 import sqlite3
 import pandas as pd
+import json
 from datetime import datetime
-from models import CREATE_TICKETS_TABLE, CREATE_TASKS_TABLE
+from models import CREATE_TICKETS_TABLE, CREATE_TASKS_TABLE, CREATE_TICKET_LOG_TABLE
 
 DB_NAME = "gestar.db"
 
@@ -22,15 +23,18 @@ def init_db():
     """Inicializa la base de datos creando las tablas si no existen."""
     conn = get_connection()
     try:
-        # Drop tables to force schema update (Dev MVP mode)
-        # conn.execute("DROP TABLE IF EXISTS tasks")
-        # conn.execute("DROP TABLE IF EXISTS tickets")
-
         conn.execute(CREATE_TICKETS_TABLE)
         conn.execute(CREATE_TASKS_TABLE)
+        conn.execute(CREATE_TICKET_LOG_TABLE)
+
+        # MIGRATION: Check if subcategoria exists in tickets
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(tickets)")
+        columns = [col[1] for col in cur.fetchall()]
+        if "subcategoria" not in columns:
+            conn.execute("ALTER TABLE tickets ADD COLUMN subcategoria TEXT")
 
         # Check if empty and populate
-        cur = conn.cursor()
         cur.execute("SELECT count(*) FROM tickets")
         if cur.fetchone()[0] == 0:
             populate_samples(conn)
@@ -135,7 +139,45 @@ def populate_samples(conn):
                 ),
             )
 
+        # Add init log
+        cur.execute(
+            "INSERT INTO ticket_log (ticket_id, author, event_type, message) VALUES (?, ?, ?, ?)",
+            (ticket_id, "System", "system", "Ticket creado con datos de ejemplo."),
+        )
+
     conn.commit()
+
+
+# --- LOGGING ---
+
+
+def add_ticket_log(ticket_id, author, event_type, message, meta_json=None):
+    """Inserta un registro en el log del ticket."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO ticket_log (ticket_id, author, event_type, message, meta_json)
+            VALUES (?, ?, ?, ?, ?)
+        """,
+            (ticket_id, author, event_type, message, meta_json),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ticket_logs(ticket_id):
+    """Retorna los logs de un ticket ordenados cronológicamente."""
+    conn = get_connection()
+    try:
+        return pd.read_sql_query(
+            "SELECT * FROM ticket_log WHERE ticket_id = ? ORDER BY id ASC",
+            conn,
+            params=(ticket_id,),
+        )
+    finally:
+        conn.close()
 
 
 # --- TICKETS ---
@@ -150,10 +192,10 @@ def create_ticket(data):
     cursor = conn.cursor()
     query = """
         INSERT INTO tickets (
-            titulo, descripcion, area_destino, categoria, division, planta,
+            titulo, descripcion, area_destino, categoria, subcategoria, division, planta,
             prioridad, urgencia_sugerida, responsable_sugerido, solicitante,
             created_by, estado
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     # Prioridad default a Media (o Null) si no se provee. Logica de negocio: Solicitante no define prioridad final.
     prioridad = data.get("prioridad", "Media")
@@ -166,6 +208,7 @@ def create_ticket(data):
                 data["descripcion"],
                 data["area_destino"],
                 data["categoria"],
+                data.get("subcategoria"),
                 data["division"],
                 data["planta"],
                 prioridad,
@@ -176,8 +219,19 @@ def create_ticket(data):
                 "NUEVO",
             ),
         )
+        ticket_id = cursor.lastrowid
+
+        # Log creation
+        cursor.execute(
+            """
+            INSERT INTO ticket_log (ticket_id, author, event_type, message)
+            VALUES (?, ?, ?, ?)
+        """,
+            (ticket_id, data.get("created_by", "System"), "system", "Ticket creado."),
+        )
+
         conn.commit()
-        return cursor.lastrowid
+        return ticket_id
     finally:
         conn.close()
 
@@ -226,14 +280,67 @@ def get_ticket_by_id(ticket_id):
         conn.close()
 
 
-def update_ticket(ticket_id, updates):
+def update_ticket(ticket_id, updates, author="System"):
     """
-    Actualiza campos de un ticket.
+    Actualiza campos de un ticket y registra cambios en el log.
     updates: dict con {campo: valor}
+    author: usuario que realiza el cambio
     """
     conn = get_connection()
     try:
-        # Add updated_at
+        # Get current state for comparison
+        current = pd.read_sql_query(
+            "SELECT * FROM tickets WHERE id = ?", conn, params=(ticket_id,)
+        )
+        if current.empty:
+            return
+        current = current.iloc[0]
+
+        # Detect changes and log
+        if "estado" in updates and updates["estado"] != current["estado"]:
+            msg = f"Cambio de estado: {current['estado']} -> {updates['estado']}"
+            meta = json.dumps({"from": current["estado"], "to": updates["estado"]})
+            conn.execute(
+                "INSERT INTO ticket_log (ticket_id, author, event_type, message, meta_json) VALUES (?, ?, ?, ?, ?)",
+                (ticket_id, author, "status_change", msg, meta),
+            )
+
+            # If closed/resolved, set closed_at
+            if (
+                updates["estado"] in ["RESUELTO", "CERRADO"]
+                and not current["closed_at"]
+            ):
+                conn.execute(
+                    "UPDATE tickets SET closed_at = ? WHERE id = ?",
+                    (datetime.now(), ticket_id),
+                )
+
+        if (
+            "responsable_asignado" in updates
+            and updates["responsable_asignado"] != current["responsable_asignado"]
+        ):
+            old = (
+                current["responsable_asignado"]
+                if current["responsable_asignado"]
+                else "Sin Asignar"
+            )
+            new = updates["responsable_asignado"]
+            msg = f"Asignación: {old} -> {new}"
+            conn.execute(
+                "INSERT INTO ticket_log (ticket_id, author, event_type, message) VALUES (?, ?, ?, ?)",
+                (ticket_id, author, "assignment", msg),
+            )
+
+        if "prioridad" in updates and updates["prioridad"] != current["prioridad"]:
+            msg = (
+                f"Prioridad cambiada: {current['prioridad']} -> {updates['prioridad']}"
+            )
+            conn.execute(
+                "INSERT INTO ticket_log (ticket_id, author, event_type, message) VALUES (?, ?, ?, ?)",
+                (ticket_id, author, "priority_change", msg),
+            )
+
+        # Perform Update
         updates["updated_at"] = datetime.now()
 
         set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
@@ -242,13 +349,6 @@ def update_ticket(ticket_id, updates):
 
         query = f"UPDATE tickets SET {set_clause} WHERE id = ?"
         conn.execute(query, values)
-
-        # Si se cierra, actualizar closed_at si no está seteada
-        if "estado" in updates and updates["estado"] in ["RESUELTO", "CERRADO"]:
-            conn.execute(
-                "UPDATE tickets SET closed_at = ? WHERE id = ? AND closed_at IS NULL",
-                (datetime.now(), ticket_id),
-            )
 
         conn.commit()
     finally:

@@ -5,7 +5,6 @@
 import streamlit as st
 import db
 import models
-from datetime import datetime
 
 # Configuración de la página
 st.set_page_config(
@@ -18,7 +17,7 @@ db.init_db()
 # --- Sidebar: Simulación de Contexto ---
 st.sidebar.title("GESTAR")
 st.sidebar.markdown("### 👤 Simulación de Sesión")
-current_user = st.sidebar.text_input("Usuario Actual", value="Admin")
+current_user = st.sidebar.selectbox("Usuario Actual", models.USERS_PROV)
 current_role = st.sidebar.selectbox("Rol", models.ROLES, index=1)  # Default Analista
 current_area = st.sidebar.selectbox("Mi Área", models.AREAS, index=1)  # Default IT
 
@@ -36,13 +35,23 @@ def show_create_ticket():
             titulo = st.text_input("Título del Ticket*")
             area = st.selectbox("Área Destino", models.AREAS)
             urgencia = st.selectbox("Urgencia Sugerida", models.PRIORIDADES)
-            solicitante = st.text_input("Solicitante*", value=current_user)
+            solicitante = st.selectbox(
+                "Solicitante*",
+                models.USERS_PROV,
+                index=models.USERS_PROV.index(current_user)
+                if current_user in models.USERS_PROV
+                else 0,
+            )
 
         with col2:
-            categoria = st.text_input("Categoría")
-            division = st.text_input("División")
-            planta = st.text_input("Planta")
-            resp_sugerido = st.text_input("Responsable Sugerido")
+            categoria = st.selectbox("Categoría", models.CATEGORIAS)
+            sub_options = models.SUBCATEGORIAS.get(categoria, [])
+            subcategoria = st.selectbox("Subcategoría", sub_options)
+            division = st.selectbox("División", models.DIVISIONES)
+            planta = st.selectbox("Planta", models.PLANTAS)
+            resp_sugerido = st.selectbox(
+                "Responsable Sugerido", ["Sin Sugerir"] + models.USERS_PROV
+            )
 
         descripcion = st.text_area("Descripción detallada*")
 
@@ -59,6 +68,7 @@ def show_create_ticket():
                     "descripcion": descripcion,
                     "area_destino": area,
                     "categoria": categoria,
+                    "subcategoria": subcategoria,
                     "division": division,
                     "planta": planta,
                     "urgencia_sugerida": urgencia,  # User input
@@ -199,7 +209,9 @@ def show_ticket_detail():
     if can_take:
         if st.button("🙋 Tomar Ticket (Autoasignar)"):
             db.update_ticket(
-                ticket_id, {"responsable_asignado": current_user, "estado": "ASIGNADO"}
+                ticket_id,
+                {"responsable_asignado": current_user, "estado": "ASIGNADO"},
+                author=current_user,
             )
             st.success("Ticket asignado a ti correctamente.")
             st.rerun()
@@ -236,11 +248,19 @@ def show_ticket_detail():
                 )
 
                 if can_assign:
-                    new_asignado = st.text_input(
-                        "Responsable Asignado",
-                        value=ticket["responsable_asignado"]
-                        if ticket["responsable_asignado"]
-                        else "",
+                    current_resp = ticket["responsable_asignado"]
+                    resps_list = ["Sin Asignar"] + models.USERS_PROV
+                    try:
+                        resp_idx = (
+                            resps_list.index(current_resp)
+                            if current_resp in resps_list
+                            else 0
+                        )
+                    except:
+                        resp_idx = 0
+
+                    new_asignado = st.selectbox(
+                        "Responsable Asignado", resps_list, index=resp_idx
                     )
                 else:
                     st.write(
@@ -257,6 +277,7 @@ def show_ticket_detail():
                         "estado": new_status,
                         "responsable_asignado": new_asignado,
                     },
+                    author=current_user,
                 )
                 st.success("Ticket actualizado")
                 st.rerun()
@@ -307,10 +328,39 @@ def show_ticket_detail():
         with c_add1:
             desc = st.text_input("Nueva Tarea")
         with c_add2:
-            resp = st.text_input("Resp.", value=current_user)
+            resp = st.selectbox(
+                "Resp.",
+                models.USERS_PROV,
+                index=models.USERS_PROV.index(current_user)
+                if current_user in models.USERS_PROV
+                else 0,
+            )
         if st.form_submit_button("Agregar"):
             if desc:
                 db.create_task(ticket_id, desc, resp)
+                st.rerun()
+
+    # --- HISTORIAL / COMENTARIOS ---
+    st.divider()
+    st.subheader("📜 Historial y Comentarios")
+
+    logs = db.get_ticket_logs(ticket_id)
+    if not logs.empty:
+        for idx, log in logs.iterrows():
+            with st.chat_message(
+                "user" if log["event_type"] == "comment" else "assistant"
+            ):
+                st.write(f"**{log['author']}** ({log['created_at']}):")
+                st.write(log["message"])
+                if log["event_type"] != "comment" and log["meta_json"]:
+                    st.caption(f"Detalles: {log['meta_json']}")
+
+    with st.form("new_comment"):
+        comment_text = st.text_area("Agregar Comentario")
+        if st.form_submit_button("Enviar Comentario"):
+            if comment_text:
+                db.add_ticket_log(ticket_id, current_user, "comment", comment_text)
+                st.success("Comentario agregado")
                 st.rerun()
 
 
