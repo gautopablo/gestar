@@ -174,7 +174,7 @@ def render_ticket_table(df, show_filters=False, key_suffix=""):
                 "updated_at",
             ]
         ],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -455,7 +455,7 @@ def show_admin():
                 "activo": st.column_config.CheckboxColumn("Activo"),
             },
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
             key="user_editor",
         )
 
@@ -501,6 +501,7 @@ selection = st.sidebar.radio(
     index=opciones.index(st.session_state["page"])
     if st.session_state["page"] in opciones
     else 0,
+    key="nav_radio_v1",
 )
 
 if selection != st.session_state["page"]:
