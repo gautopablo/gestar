@@ -17,10 +17,33 @@ db.init_db()
 # --- Sidebar: Simulación de Contexto ---
 st.sidebar.title("GESTAR")
 st.sidebar.markdown("### 👤 Simulación de Sesión")
-current_user = st.sidebar.selectbox("Usuario Actual", models.USERS_PROV)
-current_role = st.sidebar.selectbox("Rol", models.ROLES, index=1)  # Default Analista
-current_area = st.sidebar.selectbox("Mi Área", models.AREAS, index=1)  # Default IT
 
+# Fetch users from DB
+df_users = db.get_users(only_active=True)
+user_names = df_users["nombre_completo"].tolist()
+
+if not user_names:
+    st.sidebar.error("No hay usuarios activos en la DB.")
+    st.stop()
+
+# User Selection
+selected_name = st.sidebar.selectbox("Usuario Actual", user_names)
+user_info = db.get_user_by_name(selected_name)
+
+if user_info:
+    current_user = user_info["nombre_completo"]
+    current_role = user_info["rol"]
+    current_area = user_info["area"]
+else:
+    current_user = selected_name
+    current_role = "Solicitante"
+    current_area = "IT"
+
+st.sidebar.text_input("Rol", value=current_role, disabled=True)
+st.sidebar.text_input("Área", value=current_area, disabled=True)
+
+st.sidebar.markdown("---")
+# Navigation moved down to dispatcher section
 st.sidebar.divider()
 
 # --- Funciones de Interfaz ---
@@ -37,9 +60,9 @@ def show_create_ticket():
             urgencia = st.selectbox("Urgencia Sugerida", models.PRIORIDADES)
             solicitante = st.selectbox(
                 "Solicitante*",
-                models.USERS_PROV,
-                index=models.USERS_PROV.index(current_user)
-                if current_user in models.USERS_PROV
+                user_names,
+                index=user_names.index(current_user)
+                if current_user in user_names
                 else 0,
             )
 
@@ -50,7 +73,7 @@ def show_create_ticket():
             division = st.selectbox("División", models.DIVISIONES)
             planta = st.selectbox("Planta", models.PLANTAS)
             resp_sugerido = st.selectbox(
-                "Responsable Sugerido", ["Sin Sugerir"] + models.USERS_PROV
+                "Responsable Sugerido", ["Sin Sugerir"] + user_names
             )
 
         descripcion = st.text_area("Descripción detallada*")
@@ -249,14 +272,14 @@ def show_ticket_detail():
 
                 if can_assign:
                     current_resp = ticket["responsable_asignado"]
-                    resps_list = ["Sin Asignar"] + models.USERS_PROV
+                    resps_list = ["Sin Asignar"] + user_names
                     try:
                         resp_idx = (
                             resps_list.index(current_resp)
                             if current_resp in resps_list
                             else 0
                         )
-                    except:
+                    except Exception:
                         resp_idx = 0
 
                     new_asignado = st.selectbox(
@@ -330,9 +353,9 @@ def show_ticket_detail():
         with c_add2:
             resp = st.selectbox(
                 "Resp.",
-                models.USERS_PROV,
-                index=models.USERS_PROV.index(current_user)
-                if current_user in models.USERS_PROV
+                user_names,
+                index=user_names.index(current_user)
+                if current_user in user_names
                 else 0,
             )
         if st.form_submit_button("Agregar"):
@@ -377,8 +400,98 @@ def show_my_tasks():
         )
 
 
+# --- PANEL ADMINISTRACION ---
+
+
+def show_admin():
+    st.header("⚙️ Panel de Administración")
+
+    tab_users, tab_aux = st.tabs(["👥 Usuarios", "📋 Tablas Auxiliares"])
+
+    with tab_users:
+        st.subheader("Gestión de Usuarios")
+
+        # Form to add user
+        with st.expander("➕ Agregar Nuevo Usuario"):
+            with st.form("add_user_form"):
+                new_name = st.text_input("Nombre Completo*")
+                new_email = st.text_input("Email")
+                new_role = st.selectbox("Rol", models.ROLES)
+                new_area = st.selectbox("Área", models.AREAS)
+
+                if st.form_submit_button("Guardar Usuario"):
+                    if new_name:
+                        db.create_user(
+                            {
+                                "nombre_completo": new_name,
+                                "email": new_email,
+                                "rol": new_role,
+                                "area": new_area,
+                                "activo": 1,
+                            }
+                        )
+                        st.success(f"Usuario {new_name} creado.")
+                        st.rerun()
+                    else:
+                        st.error("El nombre es obligatorio.")
+
+        # Grid Editable
+        df_all_users = db.get_users()
+
+        edited_df = st.data_editor(
+            df_all_users,
+            column_config={
+                "id": None,
+                "nombre_completo": st.column_config.TextColumn(
+                    "Nombre Completo", disabled=True
+                ),
+                "email": st.column_config.TextColumn("Email"),
+                "rol": st.column_config.SelectboxColumn(
+                    "Rol", options=models.ROLES, required=True
+                ),
+                "area": st.column_config.SelectboxColumn(
+                    "Área", options=models.AREAS, required=True
+                ),
+                "activo": st.column_config.CheckboxColumn("Activo"),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="user_editor",
+        )
+
+        c1, c2, _ = st.columns([1, 1, 4])
+        if c1.button("Confirmar Cambios", type="primary"):
+            state = st.session_state.get("user_editor", {})
+            edited = state.get("edited_rows", {})
+
+            if edited:
+                for row_idx, updates in edited.items():
+                    idx = int(row_idx)
+                    user_id = int(df_all_users.iloc[idx]["id"])
+
+                    # Convert bool to int for SQLite
+                    if "activo" in updates:
+                        updates["activo"] = 1 if updates["activo"] else 0
+
+                    db.update_user(user_id, updates)
+
+                st.success("Cambios guardados.")
+                st.rerun()
+            else:
+                st.info("No se detectaron cambios.")
+
+        if c2.button("Cancelar"):
+            st.rerun()
+
+    with tab_aux:
+        st.info("Próximamente: Gestión de Áreas, Divisiones y Plantas.")
+
+
 # --- Navegación Principal ---
 opciones = ["Crear Ticket", "Bandeja de Tickets", "Detalle de Ticket", "Mis Tareas"]
+if current_role == "Administrador":
+    opciones.append("Administración")
+
 if "page" not in st.session_state:
     st.session_state["page"] = "Crear Ticket"
 
@@ -394,11 +507,14 @@ if selection != st.session_state["page"]:
     st.session_state["page"] = selection
     st.rerun()
 
-if st.session_state["page"] == "Crear Ticket":
+# --- MAIN DISPATCHER ---
+if selection == "Crear Ticket":
     show_create_ticket()
-elif st.session_state["page"] == "Bandeja de Tickets":
+elif selection == "Bandeja de Tickets":
     show_ticket_tray()
-elif st.session_state["page"] == "Detalle de Ticket":
+elif selection == "Detalle de Ticket":
     show_ticket_detail()
-elif st.session_state["page"] == "Mis Tareas":
+elif selection == "Mis Tareas":
     show_my_tasks()
+elif selection == "Administración":
+    show_admin()

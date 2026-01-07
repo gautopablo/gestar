@@ -203,8 +203,8 @@ La interfaz de GESTAR se organiza mediante una barra lateral de navegación y cu
 
 ### 🛠 Barra Lateral (Sidebar)
 
-- **Simulación de Sesión**: Permite cambiar dinámicamente el **Usuario Actual**, su **Rol** y su **Área**. Esto condiciona qué tickets son visibles y qué acciones están permitidas.
-- **Selector de Página**: Navegación entre los paneles principales.
+- **Simulación de Sesión**: Permite cambiar el **Usuario Actual**. Al seleccionarlo, el **Rol** y el **Área** se muestran automáticamente como campos de solo lectura (lectura desde la Base de Datos). Esto condiciona qué tickets son visibles y qué acciones están permitidas.
+- **Selector de Página**: Navegación entre los paneles principales. El panel de "Administración" solo es visible para usuarios con rol `Administrador`.
 
 ### 📝 Panel: Crear Ticket
 

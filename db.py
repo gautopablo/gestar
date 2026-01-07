@@ -6,7 +6,12 @@ import sqlite3
 import pandas as pd
 import json
 from datetime import datetime
-from models import CREATE_TICKETS_TABLE, CREATE_TASKS_TABLE, CREATE_TICKET_LOG_TABLE
+from models import (
+    CREATE_TICKETS_TABLE,
+    CREATE_TASKS_TABLE,
+    CREATE_TICKET_LOG_TABLE,
+    CREATE_USERS_TABLE,
+)
 
 DB_NAME = "gestar.db"
 
@@ -26,6 +31,7 @@ def init_db():
         conn.execute(CREATE_TICKETS_TABLE)
         conn.execute(CREATE_TASKS_TABLE)
         conn.execute(CREATE_TICKET_LOG_TABLE)
+        conn.execute(CREATE_USERS_TABLE)
 
         # MIGRATION: Check if subcategoria exists in tickets
         cur = conn.cursor()
@@ -34,7 +40,39 @@ def init_db():
         if "subcategoria" not in columns:
             conn.execute("ALTER TABLE tickets ADD COLUMN subcategoria TEXT")
 
-        # Check if empty and populate
+        # Check if users table is empty and populate initial users
+        cur.execute("SELECT count(*) FROM users")
+        if cur.fetchone()[0] == 0:
+            from models import USERS_PROV
+
+            # Primary Admin
+            conn.execute(
+                "INSERT INTO users (nombre_completo, email, rol, area, activo) VALUES (?, ?, ?, ?, 1)",
+                ("Gauto, Pablo", "gautop@taranto.com.ar", "Administrador", "Sistemas"),
+            )
+
+            for u in USERS_PROV:
+                # Basic parsing "Name <email>"
+                if " <" in u:
+                    name, email = u.split(" <")
+                    email = email.rstrip(">")
+                else:
+                    name, email = u, ""
+
+                # Assign default for current list
+                role = "Analista"
+                area = "IT"  # Default to IT for initial list
+                if "Ranea" in name:
+                    area = "Ing. Procesos"
+                if "Vazquez" in name:
+                    area = "Sistemas"  # Placeholder
+
+                conn.execute(
+                    "INSERT INTO users (nombre_completo, email, rol, area, activo) VALUES (?, ?, ?, ?, 1)",
+                    (name, email, role, area),
+                )
+
+        # Check if empty and populate tickets
         cur.execute("SELECT count(*) FROM tickets")
         if cur.fetchone()[0] == 0:
             populate_samples(conn)
@@ -262,6 +300,87 @@ def get_tickets(filters=None):
 
         df = pd.read_sql_query(query, conn, params=params)
         return df
+    finally:
+        conn.close()
+
+
+# --- GESTION DE USUARIOS ---
+
+
+def get_users(only_active=False):
+    """Retorna un DataFrame con todos los usuarios."""
+    conn = get_connection()
+    try:
+        query = "SELECT * FROM users"
+        if only_active:
+            query += " WHERE activo = 1"
+        query += " ORDER BY nombre_completo ASC"
+        df = pd.read_sql_query(query, conn)
+        return df
+    finally:
+        conn.close()
+
+
+def create_user(data):
+    """Crea un nuevo usuario."""
+    conn = get_connection()
+    try:
+        query = """
+            INSERT INTO users (nombre_completo, email, rol, area, activo)
+            VALUES (?, ?, ?, ?, ?)
+        """
+        conn.execute(
+            query,
+            (
+                data["nombre_completo"],
+                data.get("email"),
+                data.get("rol", "Solicitante"),
+                data.get("area"),
+                data.get("activo", 1),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_user(user_id, updates):
+    """Actualiza datos de un usuario."""
+    if not updates:
+        return
+    conn = get_connection()
+    try:
+        set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+        values = list(updates.values())
+        values.append(user_id)
+        query = f"UPDATE users SET {set_clause} WHERE id = ?"
+        conn.execute(query, values)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_user_by_name(name):
+    """Busca un usuario por su nombre completo."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM users WHERE nombre_completo = ? OR nombre_completo || ' <' || email || '>' = ?",
+            (name, name),
+        )
+        row = cur.fetchone()
+        if row:
+            # Columns: id, nombre_completo, email, rol, area, activo
+            return {
+                "id": row[0],
+                "nombre_completo": row[1],
+                "email": row[2],
+                "rol": row[3],
+                "area": row[4],
+                "activo": row[5],
+            }
+        return None
     finally:
         conn.close()
 

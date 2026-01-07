@@ -39,6 +39,18 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 """
 
+# Esquema de la tabla Usuarios
+CREATE_USERS_TABLE = """
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre_completo TEXT NOT NULL,
+    email TEXT,
+    rol TEXT,
+    area TEXT,
+    activo INTEGER DEFAULT 1 -- 1 for True, 0 for False
+);
+"""
+
 # Esquema de la tabla Logs
 CREATE_TICKET_LOG_TABLE = """
 CREATE TABLE IF NOT EXISTS ticket_log (
