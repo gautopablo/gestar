@@ -216,7 +216,39 @@ def show_create_ticket(u_names, c_user):
                     "created_by": c_user,
                 }
                 tid = db.create_ticket(data)
-                st.success(f"¡Ticket #{tid} creado con éxito!")
+                st.success(f"Ticket #{tid} creado con éxito!")
+
+
+def show_simple_request(c_user):
+    st.markdown(
+        "### <i class='bi bi-lightning-charge'></i>Solicitud Sencilla",
+        unsafe_allow_html=True,
+    )
+    with st.form("v2_simple_request", clear_on_submit=True):
+        titulo = st.text_input("Título del Ticket*")
+        area = st.selectbox("Área Destino", models.AREAS)
+        descripcion = st.text_area("Descripción detallada*")
+
+        if st.form_submit_button("CREAR SOLICITUD", type="primary"):
+            if not titulo or not descripcion:
+                st.error("Campos obligatorios faltantes.")
+            else:
+                data = {
+                    "titulo": titulo,
+                    "descripcion": descripcion,
+                    "area_destino": area,
+                    "categoria": "",
+                    "subcategoria": None,
+                    "division": "",
+                    "planta": "",
+                    "urgencia_sugerida": None,
+                    "prioridad": "Media",
+                    "responsable_sugerido": None,
+                    "solicitante": c_user,
+                    "created_by": c_user,
+                }
+                tid = db.create_ticket(data)
+                st.success(f"Ticket #{tid} creado con éxito!")
 
 
 def render_v2_table(df, key_suffix=""):
@@ -246,7 +278,9 @@ def render_v2_table(df, key_suffix=""):
             "ID para detalle", min_value=1, step=1, key=f"v2_tid_{key_suffix}"
         )
     with c2:
-        if st.button("VER DETALLE", key=f"v2_btn_{key_suffix}", use_container_width=True):
+        if st.button(
+            "VER DETALLE", key=f"v2_btn_{key_suffix}", use_container_width=True
+        ):
             st.session_state["v2_current_ticket_id"] = tid
             st.session_state["v2_page"] = "DETALLE"
             st.rerun()
@@ -516,7 +550,10 @@ with c_head3:
     with cols_top[0]:
         c_home_i, c_home_b = st.columns([1, 5], gap="small")
         with c_home_i:
-            st.markdown("<span class='top-icon'><i class='bi bi-house'></i></span>", unsafe_allow_html=True)
+            st.markdown(
+                "<span class='top-icon'><i class='bi bi-house'></i></span>",
+                unsafe_allow_html=True,
+            )
         with c_home_b:
             if st.button("Inicio", key="v2_btn_home_top", help="Inicio"):
                 st.session_state["v2_page"] = "CREAR TICKET"
@@ -524,7 +561,10 @@ with c_head3:
     with cols_top[1]:
         c_ref_i, c_ref_b = st.columns([1, 5], gap="small")
         with c_ref_i:
-            st.markdown("<span class='top-icon'><i class='bi bi-arrow-clockwise'></i></span>", unsafe_allow_html=True)
+            st.markdown(
+                "<span class='top-icon'><i class='bi bi-arrow-clockwise'></i></span>",
+                unsafe_allow_html=True,
+            )
         with c_ref_b:
             if st.button("Refrescar", key="v2_btn_refresh_top", help="Refrescar"):
                 st.rerun()
@@ -561,7 +601,7 @@ st.markdown(
 if "v2_page" not in st.session_state:
     st.session_state["v2_page"] = "CREAR TICKET"
 
-c_nav1, c_nav2, c_nav3, c_nav4, _ = st.columns([1, 1, 1, 1, 3], gap="small")
+c_nav1, c_nav2, c_nav3, c_nav4, c_nav5, _ = st.columns([1, 1, 1, 1, 1, 2], gap="small")
 
 with c_nav1:
     btn_class = "active-nav" if st.session_state["v2_page"] == "CREAR TICKET" else ""
@@ -588,6 +628,16 @@ with c_nav3:
     st.markdown("</div>", unsafe_allow_html=True)
 
 with c_nav4:
+    btn_class = (
+        "active-nav" if st.session_state["v2_page"] == "SOLICITUD SENCILLA" else ""
+    )
+    st.markdown(f'<div class="{btn_class}">', unsafe_allow_html=True)
+    if st.button("SOLICITUD SENCILLA", use_container_width=True, key="nav_btn_simple"):
+        st.session_state["v2_page"] = "SOLICITUD SENCILLA"
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with c_nav5:
     if cur_r == "Administrador":
         btn_class = "active-nav" if st.session_state["v2_page"] == "ADMIN" else ""
         st.markdown(f'<div class="{btn_class}">', unsafe_allow_html=True)
@@ -619,6 +669,8 @@ elif page == "MIS TAREAS":
             hide_index=True,
             use_container_width=True,
         )
+elif page == "SOLICITUD SENCILLA":
+    show_simple_request(cur_u)
 elif page == "ADMIN":
     if cur_r == "Administrador":
         show_admin()
