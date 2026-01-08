@@ -15,6 +15,44 @@ st.set_page_config(
 db.init_db()
 
 
+# --- CACHE DE LECTURA ---
+def _normalize_filters(filters):
+    if not filters:
+        return None
+    normalized = []
+    for key in sorted(filters.keys()):
+        value = filters[key]
+        if isinstance(value, list):
+            value = tuple(value)
+        normalized.append((key, value))
+    return tuple(normalized)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def cached_get_tickets(filters_key):
+    filters = None
+    if filters_key:
+        filters = {}
+        for key, value in filters_key:
+            if isinstance(value, tuple):
+                value = list(value)
+            filters[key] = value
+    return db.get_tickets(filters)
+
+
+# --- LÓGICA DE NAVEGACIÓN POR QUERY PARAMS (Para Links Reales) ---
+if "v2_tid" in st.query_params:
+    try:
+        tid = int(st.query_params["v2_tid"])
+        st.session_state["v2_current_ticket_id"] = tid
+        st.session_state["v2_page"] = "DETALLE"
+        # Limpiar para evitar ciclos
+        st.query_params.clear()
+        st.rerun()
+    except Exception:
+        pass
+
+
 # --- CSS PERSONALIZADO (Look & Feel Taranto 2026) ---
 def local_css():
     st.markdown(
@@ -84,6 +122,28 @@ def local_css():
             box-shadow: 0 4px 12px rgba(0,0,0,0.05);
         }
 
+        /* Compact rows in custom grid:
+           reduce Streamlit's default row gap without overriding all markdown/layout spacing */
+        .v2-row-cell {
+            line-height: 1.0;
+            padding: 0;
+            margin: 0;
+            display: block;
+        }
+        .v2-row-cell a {
+            line-height: 1.0;
+            padding: 0;
+            margin: 0;
+            display: inline-block;
+        }
+        /* Apply row spacing/separator directly on the row container */
+        div[data-testid="stHorizontalBlock"]:has(.v2-row-cell) {
+            gap: 0 !important;
+            padding-top: 0px !important;
+            padding-bottom: 18px !important;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
         /* Cards / Containers */
         .v2-card {
             background-color: white;
@@ -137,6 +197,38 @@ def local_css():
             background-color: #156099 !important;
             color: white !important;
             border: none;
+        }
+
+        /* Botón con apariencia de Link (Selector Robusto) */
+        div[data-testid="column"]:has(.link-style) button {
+            background-color: transparent !important;
+            border: none !important;
+            color: #156099 !important;
+            text-decoration: underline !important;
+            text-align: left !important;
+            padding: 0 !important;
+            font-weight: 400 !important;
+            text-transform: none !important;
+            letter-spacing: normal !important;
+            height: auto !important;
+            min-height: 0 !important;
+            box-shadow: none !important;
+            display: inline-block !important;
+            width: auto !important;
+        }
+        div[data-testid="column"]:has(.link-style) button:hover {
+            color: #d52e25 !important;
+            background-color: transparent !important;
+            text-decoration: underline !important;
+        }
+        div[data-testid="column"]:has(.link-style) button:active {
+            color: #d52e25 !important;
+            background-color: transparent !important;
+        }
+        div[data-testid="column"]:has(.link-style) button:focus {
+            box-shadow: none !important;
+            background-color: transparent !important;
+            outline: none !important;
         }
 
         </style>
@@ -216,6 +308,7 @@ def show_create_ticket(u_names, c_user):
                     "created_by": c_user,
                 }
                 tid = db.create_ticket(data)
+                cached_get_tickets.clear()
                 st.success(f"Ticket #{tid} creado con éxito!")
 
 
@@ -248,6 +341,7 @@ def show_simple_request(c_user):
                     "created_by": c_user,
                 }
                 tid = db.create_ticket(data)
+                cached_get_tickets.clear()
                 st.success(f"Ticket #{tid} creado con éxito!")
 
 
@@ -256,51 +350,131 @@ def render_v2_table(df, key_suffix=""):
         st.info("No hay registros en esta vista.")
         return
 
-    # Columnas que vamos a mostrar
-    columns_to_show = [
-        "id",
-        "titulo",
-        "estado",
-        "prioridad",
-        "area_destino",
-        "solicitante",
-        "updated_at",
-    ]
-    df_display = df[columns_to_show]
+    # --- LÓGICA DE PAGINACIÓN ---
+    items_per_page = 10
+    if f"v2_page_num_{key_suffix}" not in st.session_state:
+        st.session_state[f"v2_page_num_{key_suffix}"] = 0
 
-    # Opción 1: Selección Nativa (on_select="rerun")
-    selection = st.dataframe(
-        df_display,
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        key=f"v2_grid_{key_suffix}",
+    total_items = len(df)
+    total_pages = (total_items - 1) // items_per_page + 1
+
+    # Asegurar que la página actual es válida
+    current_page = st.session_state[f"v2_page_num_{key_suffix}"]
+    if current_page >= total_pages:
+        current_page = 0
+        st.session_state[f"v2_page_num_{key_suffix}"] = 0
+
+    start_idx = current_page * items_per_page
+    end_idx = min(start_idx + items_per_page, total_items)
+
+    df_page = df.iloc[start_idx:end_idx]
+
+    # --- ENCABEZADOS DE LA GRILLA ---
+    st.markdown("<br>", unsafe_allow_html=True)
+    h_cols = st.columns([0.8, 3.5, 1.5, 1.2, 2, 1.5])
+    h_cols[0].markdown("**ID**")
+    h_cols[1].markdown("**Título**")
+    h_cols[2].markdown("**Estado**")
+    h_cols[3].markdown("**Prioridad**")
+    h_cols[4].markdown("**Área Destino**")
+    h_cols[5].markdown("**Actualizado**")
+    st.markdown(
+        "<hr style='margin: 0.5rem 0; border: 0.5px solid #eee;'>",
+        unsafe_allow_html=True,
     )
 
-    # Procesar selección de fila si existe
-    if selection and selection.selection.rows:
-        selected_index = selection.selection.rows[0]
-        # Obtenemos el ID del ticket de la fila seleccionada
-        # Nota: Usamos df_display para asegurar que el índice coincide con el visualizado
-        ticket_id = df_display.iloc[selected_index]["id"]
+    # --- FILAS DE LA GRILLA ---
+    for _, row in df_page.iterrows():
+        r_cols = st.columns([0.8, 3.5, 1.5, 1.2, 2, 1.5])
 
-        st.session_state["v2_current_ticket_id"] = int(ticket_id)
-        st.session_state["v2_page"] = "DETALLE"
-        st.rerun()
-
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        tid = st.number_input(
-            "ID para detalle", min_value=1, step=1, key=f"v2_tid_{key_suffix}"
+        # ID como texto
+        r_cols[0].markdown(
+            f"<div class='v2-row-cell'>#{row['id']}</div>",
+            unsafe_allow_html=True,
         )
-    with c2:
-        if st.button(
-            "VER DETALLE", key=f"v2_btn_{key_suffix}", use_container_width=True
-        ):
-            st.session_state["v2_current_ticket_id"] = tid
-            st.session_state["v2_page"] = "DETALLE"
-            st.rerun()
+
+        # TÍTULO COMO LINK REAL
+        with r_cols[1]:
+            link_html = f'<a href="/?v2_tid={row["id"]}" target="_self" style="color:#156099; text-decoration:underline; font-weight:400; font-family:sans-serif;">{row["titulo"]}</a>'
+            st.markdown(
+                f"<div class='v2-row-cell'>{link_html}</div>",
+                unsafe_allow_html=True,
+            )
+
+        r_cols[2].markdown(
+            f"<div class='v2-row-cell'>{row['estado']}</div>",
+            unsafe_allow_html=True,
+        )
+        r_cols[3].markdown(
+            f"<div class='v2-row-cell'>{row['prioridad']}</div>",
+            unsafe_allow_html=True,
+        )
+        r_cols[4].markdown(
+            f"<div class='v2-row-cell'>{row['area_destino']}</div>",
+            unsafe_allow_html=True,
+        )
+
+        # Fecha corta
+        updated_val = row["updated_at"]
+        if isinstance(updated_val, str) and len(updated_val) > 10:
+            updated_val = updated_val[:10]
+        r_cols[5].markdown(
+            f"<div class='v2-row-cell'>{updated_val}</div>",
+            unsafe_allow_html=True,
+        )
+
+        # Separador de fila eliminado para compactar la grilla.
+
+    # --- CONTROLES DE PAGINACIÓN ---
+    if total_pages > 1:
+        st.markdown("<br>", unsafe_allow_html=True)
+        p_c1, p_c2, p_c3 = st.columns([1, 2, 1])
+
+        with p_c1:
+            if st.button(
+                "⬅️ Anterior",
+                key=f"v2_prev_{key_suffix}",
+                disabled=(current_page == 0),
+                use_container_width=True,
+            ):
+                st.session_state[f"v2_page_num_{key_suffix}"] -= 1
+                st.rerun()
+
+        with p_c2:
+            st.markdown(
+                f"<p style='text-align:center;'>Página <b>{current_page + 1}</b> de {total_pages}<br><small>{total_items} tickets en total</small></p>",
+                unsafe_allow_html=True,
+            )
+
+        with p_c3:
+            if st.button(
+                "Siguiente ➡️",
+                key=f"v2_next_{key_suffix}",
+                disabled=(current_page >= total_pages - 1),
+                use_container_width=True,
+            ):
+                st.session_state[f"v2_page_num_{key_suffix}"] += 1
+                st.rerun()
+
+    # Mantenemos el selector manual por ID al final como expander
+    with st.expander("Acceso rápido por ID"):
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            tid = st.number_input(
+                "Ingresar ID manualmente",
+                min_value=1,
+                step=1,
+                key=f"v2_tid_manual_{key_suffix}",
+            )
+        with c2:
+            if st.button(
+                "IR AL DETALLE",
+                key=f"v2_btn_manual_{key_suffix}",
+                use_container_width=True,
+            ):
+                st.session_state["v2_current_ticket_id"] = tid
+                st.session_state["v2_page"] = "DETALLE"
+                st.rerun()
 
 
 def show_ticket_tray(c_area, c_role, c_user):
@@ -308,34 +482,35 @@ def show_ticket_tray(c_area, c_role, c_user):
         "### <i class='bi bi-inbox'></i>Bandeja de Gestión",
         unsafe_allow_html=True,
     )
-    t_cola, t_asig, t_proc, t_cerr, t_all = st.tabs(
-        ["COLA", "MIS TICKETS", "EN PROCESO", "CERRADOS", "BUSCADOR"]
+    # Reordenado: BUSCADOR primero para que sea la seleccionada por defecto
+    t_all, t_cola, t_asig, t_proc, t_cerr = st.tabs(
+        ["BUSCADOR", "COLA", "MIS TICKETS", "EN PROCESO", "CERRADOS"]
     )
+
+    with t_all:
+        render_v2_table(cached_get_tickets(None), "all")
 
     with t_cola:
         f = {
             "estado": "NUEVO",
             "area_destino": c_area if c_role != "Director" else None,
         }
-        render_v2_table(db.get_tickets(f), "cola")
+        render_v2_table(cached_get_tickets(_normalize_filters(f)), "cola")
 
     with t_asig:
         f = {"responsable_asignado": c_user, "estado": ["ASIGNADO", "EN PROCESO"]}
-        render_v2_table(db.get_tickets(f), "asig")
+        render_v2_table(cached_get_tickets(_normalize_filters(f)), "asig")
 
     with t_proc:
         f_area = st.selectbox("Área", ["Todas"] + models.AREAS, key="v2_proc_area")
         f = {"estado": ["ASIGNADO", "EN PROCESO"]}
         if f_area != "Todas":
             f["area_destino"] = f_area
-        render_v2_table(db.get_tickets(f), "proc")
+        render_v2_table(cached_get_tickets(_normalize_filters(f)), "proc")
 
     with t_cerr:
         f = {"estado": ["RESUELTO", "CERRADO"]}
-        render_v2_table(db.get_tickets(f), "cerr")
-
-    with t_all:
-        render_v2_table(db.get_tickets(), "all")
+        render_v2_table(cached_get_tickets(_normalize_filters(f)), "cerr")
 
 
 def show_ticket_detail(c_user, c_role, c_area, u_names):
@@ -380,6 +555,7 @@ def show_ticket_detail(c_user, c_role, c_area, u_names):
                     {"responsable_asignado": c_user, "estado": "ASIGNADO"},
                     author=c_user,
                 )
+                cached_get_tickets.clear()
                 st.rerun()
 
     # Management Form
@@ -426,6 +602,7 @@ def show_ticket_detail(c_user, c_role, c_area, u_names):
                     {"prioridad": prio, "estado": stat, "responsable_asignado": asig},
                     author=c_user,
                 )
+                cached_get_tickets.clear()
                 st.rerun()
 
     # Information Tabs
@@ -447,13 +624,23 @@ def show_ticket_detail(c_user, c_role, c_area, u_names):
             unsafe_allow_html=True,
         )
         tasks = db.get_tasks_for_ticket(tid)
+        h_t1, h_t2 = st.columns([5, 1])
+        h_t1.markdown("**Tarea**")
+        h_t2.markdown("**Completada**")
         for _, t in tasks.iterrows():
             c_t1, c_t2 = st.columns([5, 1])
             c_t1.write(f"**{t['descripcion']}** (Resp: {t['responsable'] or 'N/A'})")
-            if t["estado"] != "COMPLETADA":
-                if c_t2.button("✅", key=f"v2_tk_{t['id']}"):
-                    db.update_task_status(t["id"], "COMPLETADA")
-                    st.rerun()
+            checked = t["estado"] == "COMPLETADA"
+            new_checked = c_t2.checkbox(
+                "Completada",
+                value=checked,
+                key=f"v2_tk_{t['id']}",
+                label_visibility="collapsed",
+            )
+            if new_checked != checked:
+                new_status = "COMPLETADA" if new_checked else "PENDIENTE"
+                db.update_task_status(t["id"], new_status)
+                st.rerun()
 
         with st.form("v2_add_task"):
             c_a1, c_a2 = st.columns([3, 1])
@@ -501,8 +688,8 @@ def show_admin():
                         )
                         st.rerun()
 
-        df_all = db.get_users()
-        st.data_editor(
+        df_all = db.get_users().reset_index(drop=True)
+        df_edit = st.data_editor(
             df_all,
             column_config={
                 "id": None,
@@ -516,14 +703,40 @@ def show_admin():
         )
 
         if st.button("CONFIRMAR CAMBIOS USUARIOS", type="primary"):
-            state = st.session_state.get("v2_user_ed", {}).get("edited_rows", {})
-            for row_idx, updates in state.items():
-                uid = df_all.iloc[int(row_idx)]["id"]
-                if "activo" in updates:
-                    updates["activo"] = 1 if updates["activo"] else 0
-                db.update_user(uid, updates)
-            st.success("Guardado")
-            st.rerun()
+            if "id" not in df_edit.columns:
+                st.error("No se pudo leer el ID de usuarios.")
+            else:
+                editable_cols = [
+                    c for c in ["rol", "area", "email", "activo"] if c in df_all.columns
+                ]
+                df_all_by_id = df_all.set_index("id")
+                df_edit_by_id = df_edit.set_index("id")
+
+                def values_equal(a, b):
+                    if a != a and b != b:
+                        return True
+                    return a == b
+
+                updates_applied = 0
+                for uid in df_edit_by_id.index.intersection(df_all_by_id.index):
+                    updates = {}
+                    for col in editable_cols:
+                        if col not in df_edit_by_id.columns:
+                            continue
+                        old_val = df_all_by_id.at[uid, col]
+                        new_val = df_edit_by_id.at[uid, col]
+                        if not values_equal(old_val, new_val):
+                            if col == "activo":
+                                new_val = 1 if bool(new_val) else 0
+                            updates[col] = new_val
+                    if updates:
+                        db.update_user(uid, updates)
+                        updates_applied += 1
+                if updates_applied:
+                    st.success(f"Guardado ({updates_applied})")
+                else:
+                    st.info("No se detectaron cambios.")
+                st.rerun()
     with tab_a:
         st.info("Gestión de tablas maestras en desarrollo.")
 
@@ -681,11 +894,26 @@ elif page == "MIS TAREAS":
     if tasks.empty:
         st.info("Sin tareas.")
     else:
+        df_tasks = tasks[
+            ["id", "ticket_id", "ticket_titulo", "descripcion", "estado"]
+        ]
         st.dataframe(
-            tasks[["id", "ticket_id", "ticket_titulo", "descripcion", "estado"]],
+            df_tasks,
             hide_index=True,
             use_container_width=True,
+            selection_mode="single-row",
+            on_select="rerun",
+            key="v2_tasks_grid",
         )
+        # Navigate to ticket detail when a row is selected.
+        selection = st.session_state.get("v2_tasks_grid", {}).get("selection", {})
+        selected_rows = selection.get("rows", [])
+        if selected_rows:
+            row_idx = selected_rows[0]
+            tid = int(df_tasks.iloc[row_idx]["ticket_id"])
+            st.session_state["v2_current_ticket_id"] = tid
+            st.session_state["v2_page"] = "DETALLE"
+            st.rerun()
 elif page == "SOLICITUD SENCILLA":
     show_simple_request(cur_u)
 elif page == "ADMIN":
