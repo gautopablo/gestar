@@ -256,21 +256,38 @@ def render_v2_table(df, key_suffix=""):
         st.info("No hay registros en esta vista.")
         return
 
-    st.dataframe(
-        df[
-            [
-                "id",
-                "titulo",
-                "estado",
-                "prioridad",
-                "area_destino",
-                "solicitante",
-                "updated_at",
-            ]
-        ],
+    # Columnas que vamos a mostrar
+    columns_to_show = [
+        "id",
+        "titulo",
+        "estado",
+        "prioridad",
+        "area_destino",
+        "solicitante",
+        "updated_at",
+    ]
+    df_display = df[columns_to_show]
+
+    # Opción 1: Selección Nativa (on_select="rerun")
+    selection = st.dataframe(
+        df_display,
         use_container_width=True,
         hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"v2_grid_{key_suffix}",
     )
+
+    # Procesar selección de fila si existe
+    if selection and selection.selection.rows:
+        selected_index = selection.selection.rows[0]
+        # Obtenemos el ID del ticket de la fila seleccionada
+        # Nota: Usamos df_display para asegurar que el índice coincide con el visualizado
+        ticket_id = df_display.iloc[selected_index]["id"]
+
+        st.session_state["v2_current_ticket_id"] = int(ticket_id)
+        st.session_state["v2_page"] = "DETALLE"
+        st.rerun()
 
     c1, c2 = st.columns([3, 1])
     with c1:
