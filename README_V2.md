@@ -20,3 +20,15 @@ streamlit run app_v2.py
 - `app_v2.py`: Nueva interfaz premium.
 - `db.py` / `models.py`: Capa de datos compartida.
 - `gestar.db`: Base de datos compartida.
+
+---
+
+## Actualización en Producción
+
+Para subir cambios a la versión desplegada en Streamlit Cloud:
+
+```bash
+git add .
+git commit -m "Actualización interfaz"
+git push origin main
+```

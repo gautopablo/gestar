@@ -1,4 +1,7 @@
 # Dependencias del proyecto GESTAR
 streamlit
 pandas
+pyodbc
+pymssql
+
 
