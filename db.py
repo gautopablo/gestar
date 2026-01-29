@@ -354,7 +354,7 @@ def init_db():
                     """
                     IF OBJECT_ID('tickets','U') IS NOT NULL 
                     BEGIN
-                        IF NOT EXISTS (SELECT id FROM sys.columns WHERE object_id = OBJECT_ID('tickets') AND name = 'subcategoria')
+                    IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('tickets') AND name = 'subcategoria')
                         BEGIN
                             EXEC sp_executesql N'ALTER TABLE tickets ADD subcategoria NVARCHAR(MAX)';
                         END
