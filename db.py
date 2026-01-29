@@ -1,11 +1,14 @@
-# db.py
-# Acceso a datos (SQLite / Azure SQL)
-# Funciones CRUD para tickets y tareas
-
 import sqlite3
 import pandas as pd
 import json
 import streamlit as st
+import os
+import threading
+import logging
+
+# Configurar logging básico para capturar errores silenciosos
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 try:
     import pyodbc
@@ -15,7 +18,7 @@ try:
     import pymssql
 except ImportError:
     pymssql = None
-from datetime import datetime
+from datetime import datetime, timezone
 from models import (
     CREATE_TICKETS_TABLE,
     CREATE_TASKS_TABLE,
@@ -24,6 +27,45 @@ from models import (
 )
 
 DB_NAME = "gestar.db"
+_db_lock = threading.Lock()
+
+# Whitelists para evitar inyección SQL por nombres de columnas
+ALLOWED_COLUMNS = {
+    "tickets": [
+        "id",
+        "titulo",
+        "descripcion",
+        "area_destino",
+        "categoria",
+        "subcategoria",
+        "division",
+        "planta",
+        "prioridad",
+        "urgencia_sugerida",
+        "responsable_sugerido",
+        "responsable_asignado",
+        "estado",
+        "solicitante",
+        "created_by",
+        "created_at",
+        "updated_at",
+        "closed_at",
+    ],
+    "users": ["id", "nombre_completo", "email", "rol", "area", "activo"],
+    "tasks": [
+        "id",
+        "ticket_id",
+        "descripcion",
+        "responsable",
+        "estado",
+        "fecha_creacion",
+    ],
+}
+
+
+def get_now_utc():
+    """Retorna el timestamp actual en UTC."""
+    return datetime.now(timezone.utc)
 
 
 def _parse_conn_str(conn_str):
@@ -38,38 +80,70 @@ def _parse_conn_str(conn_str):
     return parts
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def _get_cached_sql_conn(conn_str):
-    # Try pymssql first to avoid ODBC/TLS issues on Windows.
+    """
+    Gestiona la conexión a SQL Server detectando el mejor driver disponible.
+    """
+    import re
+
+    # 1. Intentar con pymssql primero (no usa ODBC, es más directo en Linux)
     if pymssql:
-        cfg = _parse_conn_str(conn_str)
-        server_raw = cfg.get("server", "")
-        server = server_raw.replace("tcp:", "").strip()
-        port = 1433
-        if "," in server:
-            server, port_str = server.split(",", 1)
-            try:
-                port = int(port_str)
-            except ValueError:
-                port = 1433
-        user = cfg.get("uid") or cfg.get("user id") or cfg.get("user")
-        password = cfg.get("pwd") or cfg.get("password")
-        database = cfg.get("database")
-        if server and user and password and database:
-            conn = pymssql.connect(
-                server=server,
-                user=user,
-                password=password,
-                database=database,
-                port=port,
-                tds_version="7.4",
-                login_timeout=30,
-                timeout=30,
-            )
-            return _PymssqlConnWrapper(conn)
+        try:
+            cfg = _parse_conn_str(conn_str)
+            server_raw = cfg.get("server", "")
+            server = server_raw.replace("tcp:", "").strip()
+            port = 1433
+            if "," in server:
+                server, port_str = server.split(",", 1)
+                try:
+                    port = int(port_str)
+                except ValueError:
+                    port = 1433
+            user = cfg.get("uid") or cfg.get("user id") or cfg.get("user")
+            password = cfg.get("pwd") or cfg.get("password")
+            database = cfg.get("database")
+            if server and user and password and database:
+                conn = pymssql.connect(
+                    server=server,
+                    user=user,
+                    password=password,
+                    database=database,
+                    port=port,
+                    tds_version="7.4",
+                )
+                return _PymssqlConnWrapper(conn)
+        except Exception as e:
+            logger.error(f"Error conectando con pymssql: {e}")
+            pass  # Fallback a pyodbc if pymssql fails
+
+    # 2. Si falló pymssql, usar pyodbc con detección dinámica de drivers
     if pyodbc:
+        # Detectar drivers instalados en el sistema (ej: 'ODBC Driver 18 for SQL Server')
+        available_drivers = pyodbc.drivers()
+        sql_drivers = [d for d in available_drivers if "SQL Server" in d]
+
+        if sql_drivers:
+            # Elegir el más actual (normalmente el último de la lista)
+            best_driver = sql_drivers[-1]
+
+            # Reemplazar el driver de la cadena de conexión por el detectado
+            if "driver=" in conn_str.lower():
+                conn_str = re.sub(
+                    r"(?i)driver=\{[^{}]+\}", f"Driver={{{best_driver}}}", conn_str
+                )
+            else:
+                conn_str += f";Driver={{{best_driver}}}"
+
+            # Si es Driver 18, suele requerir TrustServerCertificate=yes
+            if "Driver 18" in best_driver and "TrustServerCertificate" not in conn_str:
+                conn_str += ";TrustServerCertificate=yes;"
+
         return pyodbc.connect(conn_str)
-    raise RuntimeError("No hay driver disponible para Azure SQL.")
+
+    raise RuntimeError(
+        "No hay drivers disponibles (pymssql o pyodbc) para conectar a SQL."
+    )
 
 
 def _adapt_query_for_pymssql(query):
@@ -120,9 +194,13 @@ def _is_sql_server_conn(conn):
 
 
 def close_connection(conn):
-    if _is_sql_server_conn(conn):
-        return
-    conn.close()
+    """
+    En Streamlit, no queremos cerrar conexiones que están cacheadas con @st.cache_resource.
+    Esta función solo cerrará si es estrictamente necesario (actualmente no cerramos nada cacheado).
+    """
+    # En esta arquitectura, preferimos dejar que la caché maneje la vida de la conexión.
+    # Si cerráramos una conexión SQLite cacheada, la aplicación daría error en la siguiente llamada.
+    return
 
 
 def _get_lastrowid(cursor, conn):
@@ -147,10 +225,14 @@ def _get_lastrowid(cursor, conn):
 @st.cache_resource(show_spinner="Conectando a DB...")
 def get_connection():
     """Crea y retorna una conexión a la base de datos (Azure SQL o SQLite)."""
-    # 1. Intentar conexión a Azure SQL via Streamlit Secrets
-    if "azure_sql" in st.secrets:
+    # 1. Intentar conexión a Azure SQL via Environment Variables (Recomendado para Azure) o Streamlit Secrets
+    conn_str = os.environ.get("AZURE_SQL_CONNECTION_STRING")
+
+    if not conn_str and "azure_sql" in st.secrets:
+        conn_str = st.secrets["azure_sql"].get("connection_string")
+
+    if conn_str:
         try:
-            conn_str = st.secrets["azure_sql"]["connection_string"]
             return _get_cached_sql_conn(conn_str)
         except Exception as e:
             st.warning(
@@ -172,164 +254,165 @@ def init_db():
 
     conn = get_connection()
     try:
-        # Detectar si es SQL Server o SQLite
-        is_sql_server = _is_sql_server_conn(conn)
+        with _db_lock:
+            # Detectar si es SQL Server o SQLite
+            is_sql_server = _is_sql_server_conn(conn)
 
-        # Crear tablas
-        if is_sql_server:
-            cursor = conn.cursor()
-            create_statements = [
-                """
-                IF OBJECT_ID('tickets','U') IS NULL
-                CREATE TABLE tickets (
-                    id INT IDENTITY(1,1) PRIMARY KEY,
-                    titulo NVARCHAR(MAX) NOT NULL,
-                    descripcion NVARCHAR(MAX) NULL,
-                    area_destino NVARCHAR(255) NULL,
-                    categoria NVARCHAR(255) NULL,
-                    subcategoria NVARCHAR(255) NULL,
-                    division NVARCHAR(255) NULL,
-                    planta NVARCHAR(255) NULL,
-                    prioridad NVARCHAR(50) NULL,
-                    urgencia_sugerida NVARCHAR(50) NULL,
-                    responsable_sugerido NVARCHAR(255) NULL,
-                    responsable_asignado NVARCHAR(255) NULL,
-                    estado NVARCHAR(50) DEFAULT 'NUEVO',
-                    solicitante NVARCHAR(255) NULL,
-                    created_by NVARCHAR(255) NULL,
-                    created_at DATETIME2 DEFAULT SYSUTCDATETIME(),
-                    updated_at DATETIME2 NULL,
-                    closed_at DATETIME2 NULL
-                );
-                """,
-                """
-                IF OBJECT_ID('users','U') IS NULL
-                CREATE TABLE users (
-                    id INT IDENTITY(1,1) PRIMARY KEY,
-                    nombre_completo NVARCHAR(255) NOT NULL,
-                    email NVARCHAR(255) NULL,
-                    rol NVARCHAR(50) NULL,
-                    area NVARCHAR(255) NULL,
-                    activo BIT DEFAULT 1
-                );
-                """,
-                """
-                IF OBJECT_ID('tasks','U') IS NULL
-                CREATE TABLE tasks (
-                    id INT IDENTITY(1,1) PRIMARY KEY,
-                    ticket_id INT NOT NULL,
-                    descripcion NVARCHAR(MAX) NOT NULL,
-                    responsable NVARCHAR(255) NULL,
-                    estado NVARCHAR(50) DEFAULT 'PENDIENTE',
-                    fecha_creacion DATETIME2 DEFAULT SYSUTCDATETIME(),
-                    CONSTRAINT FK_tasks_tickets FOREIGN KEY(ticket_id) REFERENCES tickets(id)
-                );
-                """,
-                """
-                IF OBJECT_ID('ticket_log','U') IS NULL
-                CREATE TABLE ticket_log (
-                    id INT IDENTITY(1,1) PRIMARY KEY,
-                    ticket_id INT NOT NULL,
-                    created_at DATETIME2 DEFAULT SYSUTCDATETIME(),
-                    author NVARCHAR(255) NULL,
-                    event_type NVARCHAR(100) NULL,
-                    message NVARCHAR(MAX) NULL,
-                    meta_json NVARCHAR(MAX) NULL,
-                    CONSTRAINT FK_ticket_log_tickets FOREIGN KEY(ticket_id) REFERENCES tickets(id)
-                );
-                """,
-            ]
-            for statement in create_statements:
-                cursor.execute(statement)
-        else:
-            conn.execute(CREATE_TICKETS_TABLE)
-            conn.execute(CREATE_TASKS_TABLE)
-            conn.execute(CREATE_TICKET_LOG_TABLE)
-            conn.execute(CREATE_USERS_TABLE)
-
-        # MIGRATION: Check if subcategoria exists in tickets
-        if not is_sql_server:
-            cur = conn.cursor()
-            cur.execute("PRAGMA table_info(tickets)")
-            columns = [col[1] for col in cur.fetchall()]
-            if "subcategoria" not in columns:
-                conn.execute("ALTER TABLE tickets ADD COLUMN subcategoria TEXT")
-        else:
-            # SQL Server migration check: use dynamic SQL to avoid parse-time errors if table missing
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                IF OBJECT_ID('tickets','U') IS NOT NULL 
-                BEGIN
-                    IF NOT EXISTS (SELECT * FROM sys.columns WHERE object_id = OBJECT_ID('tickets') AND name = 'subcategoria')
-                    BEGIN
-                        EXEC sp_executesql N'ALTER TABLE tickets ADD subcategoria NVARCHAR(MAX)';
-                    END
-                END
-                """
-            )
-
-        # Check if users table is empty and populate initial users
-        cur = conn.cursor()
-        cur.execute("SELECT count(*) FROM users")
-        if cur.fetchone()[0] == 0:
-            from models import USERS_PROV
-
-            # Primary Admin
+            # Crear tablas
             if is_sql_server:
-                cur.execute(
-                    "INSERT INTO users (nombre_completo, email, rol, area, activo) VALUES (?, ?, ?, ?, 1)",
-                    (
-                        "Gauto, Pablo",
-                        "gautop@taranto.com.ar",
-                        "Administrador",
-                        "Sistemas",
-                    ),
-                )
+                cursor = conn.cursor()
+                create_statements = [
+                    """
+                    IF OBJECT_ID('tickets','U') IS NULL
+                    CREATE TABLE tickets (
+                        id INT IDENTITY(1,1) PRIMARY KEY,
+                        titulo NVARCHAR(MAX) NOT NULL,
+                        descripcion NVARCHAR(MAX) NULL,
+                        area_destino NVARCHAR(255) NULL,
+                        categoria NVARCHAR(255) NULL,
+                        subcategoria NVARCHAR(255) NULL,
+                        division NVARCHAR(255) NULL,
+                        planta NVARCHAR(255) NULL,
+                        prioridad NVARCHAR(50) NULL,
+                        urgencia_sugerida NVARCHAR(50) NULL,
+                        responsable_sugerido NVARCHAR(255) NULL,
+                        responsable_asignado NVARCHAR(255) NULL,
+                        estado NVARCHAR(50) DEFAULT 'NUEVO',
+                        solicitante NVARCHAR(255) NULL,
+                        created_by NVARCHAR(255) NULL,
+                        created_at DATETIME2 DEFAULT SYSUTCDATETIME(),
+                        updated_at DATETIME2 NULL,
+                        closed_at DATETIME2 NULL
+                    );
+                    """,
+                    """
+                    IF OBJECT_ID('users','U') IS NULL
+                    CREATE TABLE users (
+                        id INT IDENTITY(1,1) PRIMARY KEY,
+                        nombre_completo NVARCHAR(255) NOT NULL,
+                        email NVARCHAR(255) NULL,
+                        rol NVARCHAR(50) NULL,
+                        area NVARCHAR(255) NULL,
+                        activo BIT DEFAULT 1
+                    );
+                    """,
+                    """
+                    IF OBJECT_ID('tasks','U') IS NULL
+                    CREATE TABLE tasks (
+                        id INT IDENTITY(1,1) PRIMARY KEY,
+                        ticket_id INT NOT NULL,
+                        descripcion NVARCHAR(MAX) NOT NULL,
+                        responsable NVARCHAR(255) NULL,
+                        estado NVARCHAR(50) DEFAULT 'PENDIENTE',
+                        fecha_creacion DATETIME2 DEFAULT SYSUTCDATETIME(),
+                        CONSTRAINT FK_tasks_tickets FOREIGN KEY(ticket_id) REFERENCES tickets(id)
+                    );
+                    """,
+                    """
+                    IF OBJECT_ID('ticket_log','U') IS NULL
+                    CREATE TABLE ticket_log (
+                        id INT IDENTITY(1,1) PRIMARY KEY,
+                        ticket_id INT NOT NULL,
+                        created_at DATETIME2 DEFAULT SYSUTCDATETIME(),
+                        author NVARCHAR(255) NULL,
+                        event_type NVARCHAR(100) NULL,
+                        message NVARCHAR(MAX) NULL,
+                        meta_json NVARCHAR(MAX) NULL,
+                        CONSTRAINT FK_ticket_log_tickets FOREIGN KEY(ticket_id) REFERENCES tickets(id)
+                    );
+                    """,
+                ]
+                for statement in create_statements:
+                    cursor.execute(statement)
             else:
-                conn.execute(
-                    "INSERT INTO users (nombre_completo, email, rol, area, activo) VALUES (?, ?, ?, ?, 1)",
-                    (
-                        "Gauto, Pablo",
-                        "gautop@taranto.com.ar",
-                        "Administrador",
-                        "Sistemas",
-                    ),
+                conn.execute(CREATE_TICKETS_TABLE)
+                conn.execute(CREATE_TASKS_TABLE)
+                conn.execute(CREATE_TICKET_LOG_TABLE)
+                conn.execute(CREATE_USERS_TABLE)
+
+            # MIGRATION: Check if subcategoria exists in tickets
+            if not is_sql_server:
+                cur = conn.cursor()
+                cur.execute("PRAGMA table_info(tickets)")
+                columns = [col[1] for col in cur.fetchall()]
+                if "subcategoria" not in columns:
+                    conn.execute("ALTER TABLE tickets ADD COLUMN subcategoria TEXT")
+            else:
+                # SQL Server migration check: use dynamic SQL to avoid parse-time errors if table missing
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    IF OBJECT_ID('tickets','U') IS NOT NULL 
+                    BEGIN
+                        IF NOT EXISTS (SELECT id FROM sys.columns WHERE object_id = OBJECT_ID('tickets') AND name = 'subcategoria')
+                        BEGIN
+                            EXEC sp_executesql N'ALTER TABLE tickets ADD subcategoria NVARCHAR(MAX)';
+                        END
+                    END
+                    """
                 )
 
-            for u in USERS_PROV:
-                # Basic parsing "Name <email>"
-                if " <" in u:
-                    name, email = u.split(" <")
-                    email = email.rstrip(">")
-                else:
-                    name, email = u, ""
+            # Check if users table is empty and populate initial users
+            cur = conn.cursor()
+            cur.execute("SELECT count(*) FROM users")
+            if cur.fetchone()[0] == 0:
+                from models import USERS_PROV
 
-                # Assign default for current list
-                role = "Analista"
-                area = "IT"  # Default to IT for initial list
-                if "Ranea" in name:
-                    area = "Ing. Procesos"
-                if "Vazquez" in name:
-                    area = "Sistemas"  # Placeholder
-
+                # Primary Admin
                 if is_sql_server:
                     cur.execute(
                         "INSERT INTO users (nombre_completo, email, rol, area, activo) VALUES (?, ?, ?, ?, 1)",
-                        (name, email, role, area),
+                        (
+                            "Gauto, Pablo",
+                            "gautop@taranto.com.ar",
+                            "Administrador",
+                            "Sistemas",
+                        ),
                     )
                 else:
                     conn.execute(
                         "INSERT INTO users (nombre_completo, email, rol, area, activo) VALUES (?, ?, ?, ?, 1)",
-                        (name, email, role, area),
+                        (
+                            "Gauto, Pablo",
+                            "gautop@taranto.com.ar",
+                            "Administrador",
+                            "Sistemas",
+                        ),
                     )
 
-        # Check if empty and populate tickets
-        cur.execute("SELECT count(*) FROM tickets")
-        if cur.fetchone()[0] == 0:
-            populate_samples(conn)
+                for u in USERS_PROV:
+                    # Basic parsing "Name <email>"
+                    if " <" in u:
+                        name, email = u.split(" <")
+                        email = email.rstrip(">")
+                    else:
+                        name, email = u, ""
 
-        conn.commit()
+                    # Assign default for current list
+                    role = "Analista"
+                    area = "IT"  # Default to IT for initial list
+                    if "Ranea" in name:
+                        area = "Ing. Procesos"
+                    if "Vazquez" in name:
+                        area = "Sistemas"  # Placeholder
+
+                    if is_sql_server:
+                        cur.execute(
+                            "INSERT INTO users (nombre_completo, email, rol, area, activo) VALUES (?, ?, ?, ?, 1)",
+                            (name, email, role, area),
+                        )
+                    else:
+                        conn.execute(
+                            "INSERT INTO users (nombre_completo, email, rol, area, activo) VALUES (?, ?, ?, ?, 1)",
+                            (name, email, role, area),
+                        )
+
+            # Check if empty and populate tickets
+            cur.execute("SELECT count(*) FROM tickets")
+            if cur.fetchone()[0] == 0:
+                populate_samples(conn)
+
+            conn.commit()
         st.session_state["db_initialized"] = True
     finally:
         close_connection(conn)
@@ -445,14 +528,15 @@ def add_ticket_log(ticket_id, author, event_type, message, meta_json=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO ticket_log (ticket_id, author, event_type, message, meta_json)
-            VALUES (?, ?, ?, ?, ?)
-        """,
-            (ticket_id, author, event_type, message, meta_json),
-        )
-        conn.commit()
+        with _db_lock:
+            cur.execute(
+                """
+                INSERT INTO ticket_log (ticket_id, author, event_type, message, meta_json)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+                (ticket_id, author, event_type, message, meta_json),
+            )
+            conn.commit()
     finally:
         close_connection(conn)
 
@@ -461,8 +545,9 @@ def get_ticket_logs(ticket_id):
     """Retorna los logs de un ticket ordenados cronológicamente."""
     conn = get_connection()
     try:
+        query = "SELECT id, ticket_id, created_at, author, event_type, message, meta_json FROM ticket_log WHERE ticket_id = ? ORDER BY id ASC"
         return pd.read_sql_query(
-            "SELECT * FROM ticket_log WHERE ticket_id = ? ORDER BY id ASC",
+            query,
             conn,
             params=(ticket_id,),
         )
@@ -491,42 +576,43 @@ def create_ticket(data):
     prioridad = data.get("prioridad", "Media")
 
     try:
-        cursor.execute(
-            query,
-            (
-                data["titulo"],
-                data["descripcion"],
-                data["area_destino"],
-                data["categoria"],
-                data.get("subcategoria"),
-                data["division"],
-                data["planta"],
-                prioridad,
-                data.get("urgencia_sugerida"),
-                data.get("responsable_sugerido"),
-                data["solicitante"],
-                data.get("created_by"),
-                "NUEVO",
-            ),
-        )
-        ticket_id = _get_lastrowid(cursor, conn)
-
-        # Log creation
-        if ticket_id:
+        with _db_lock:
             cursor.execute(
-                """
-                INSERT INTO ticket_log (ticket_id, author, event_type, message)
-                VALUES (?, ?, ?, ?)
-            """,
+                query,
                 (
-                    ticket_id,
-                    data.get("created_by", "System"),
-                    "system",
-                    "Ticket creado.",
+                    data["titulo"],
+                    data["descripcion"],
+                    data["area_destino"],
+                    data["categoria"],
+                    data.get("subcategoria"),
+                    data["division"],
+                    data["planta"],
+                    prioridad,
+                    data.get("urgencia_sugerida"),
+                    data.get("responsable_sugerido"),
+                    data["solicitante"],
+                    data.get("created_by"),
+                    "NUEVO",
                 ),
             )
+            ticket_id = _get_lastrowid(cursor, conn)
 
-        conn.commit()
+            # Log creation
+            if ticket_id:
+                cursor.execute(
+                    """
+                    INSERT INTO ticket_log (ticket_id, author, event_type, message)
+                    VALUES (?, ?, ?, ?)
+                """,
+                    (
+                        ticket_id,
+                        data.get("created_by", "System"),
+                        "system",
+                        "Ticket creado.",
+                    ),
+                )
+
+            conn.commit()
         return ticket_id
     finally:
         close_connection(conn)
@@ -539,11 +625,17 @@ def get_tickets(filters=None):
     """
     conn = get_connection()
     try:
-        query = "SELECT * FROM tickets"
+        cols = ", ".join(ALLOWED_COLUMNS["tickets"])
+        query = f"SELECT {cols} FROM tickets"
         params = []
         if filters:
             conditions = []
             for k, v in filters.items():
+                # Validar que la columna esté en el whitelist
+                if k not in ALLOWED_COLUMNS["tickets"]:
+                    logger.warning(f"Intento de filtrar por columna no permitida: {k}")
+                    continue
+
                 if v and v != "Todos" and v != "Todas":
                     # Handle list filters for IN clause
                     if isinstance(v, list):
@@ -570,7 +662,8 @@ def get_users(only_active=False):
     """Retorna un DataFrame con todos los usuarios."""
     conn = get_connection()
     try:
-        query = "SELECT * FROM users"
+        cols = ", ".join(ALLOWED_COLUMNS["users"])
+        query = f"SELECT {cols} FROM users"
         if only_active:
             query += " WHERE activo = 1"
         query += " ORDER BY nombre_completo ASC"
@@ -578,6 +671,11 @@ def get_users(only_active=False):
         return df
     finally:
         close_connection(conn)
+
+
+def clear_users_cache():
+    """Invalida la caché de usuarios."""
+    get_users.clear()
 
 
 def create_user(data):
@@ -588,17 +686,19 @@ def create_user(data):
             INSERT INTO users (nombre_completo, email, rol, area, activo)
             VALUES (?, ?, ?, ?, ?)
         """
-        conn.execute(
-            query,
-            (
-                data["nombre_completo"],
-                data.get("email"),
-                data.get("rol", "Solicitante"),
-                data.get("area"),
-                data.get("activo", 1),
-            ),
-        )
-        conn.commit()
+        with _db_lock:
+            conn.execute(
+                query,
+                (
+                    data["nombre_completo"],
+                    data.get("email"),
+                    data.get("rol", "Solicitante"),
+                    data.get("area"),
+                    data.get("activo", 1),
+                ),
+            )
+            conn.commit()
+        clear_users_cache()
     finally:
         close_connection(conn)
 
@@ -607,14 +707,23 @@ def update_user(user_id, updates):
     """Actualiza datos de un usuario."""
     if not updates:
         return
+    # Whitelist check
+    filtered_updates = {
+        k: v for k, v in updates.items() if k in ALLOWED_COLUMNS["users"]
+    }
+    if not filtered_updates:
+        return
+
     conn = get_connection()
     try:
-        set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
-        values = list(updates.values())
+        set_clause = ", ".join([f"{k} = ?" for k in filtered_updates.keys()])
+        values = list(filtered_updates.values())
         values.append(user_id)
         query = f"UPDATE users SET {set_clause} WHERE id = ?"
-        conn.execute(query, values)
-        conn.commit()
+        with _db_lock:
+            conn.execute(query, values)
+            conn.commit()
+        clear_users_cache()
     finally:
         close_connection(conn)
 
@@ -655,9 +764,9 @@ def get_ticket_by_id(ticket_id):
     """Retorna un ticket específico como dict (o Series)."""
     conn = get_connection()
     try:
-        df = pd.read_sql_query(
-            "SELECT * FROM tickets WHERE id = ?", conn, params=(ticket_id,)
-        )
+        cols = ", ".join(ALLOWED_COLUMNS["tickets"])
+        query = f"SELECT {cols} FROM tickets WHERE id = ?"
+        df = pd.read_sql_query(query, conn, params=(ticket_id,))
         if not df.empty:
             return df.iloc[0]
         return None
@@ -697,7 +806,7 @@ def update_ticket(ticket_id, updates, author="System"):
             ):
                 conn.execute(
                     "UPDATE tickets SET closed_at = ? WHERE id = ?",
-                    (datetime.now(), ticket_id),
+                    (get_now_utc(), ticket_id),
                 )
 
         if (
@@ -726,16 +835,24 @@ def update_ticket(ticket_id, updates, author="System"):
             )
 
         # Perform Update
-        updates["updated_at"] = datetime.now()
+        updates["updated_at"] = get_now_utc()
 
-        set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
-        values = list(updates.values())
+        # Whitelist check
+        filtered_updates = {
+            k: v for k, v in updates.items() if k in ALLOWED_COLUMNS["tickets"]
+        }
+        if not filtered_updates:
+            conn.commit()
+            return
+
+        set_clause = ", ".join([f"{k} = ?" for k in filtered_updates.keys()])
+        values = list(filtered_updates.values())
         values.append(ticket_id)
 
         query = f"UPDATE tickets SET {set_clause} WHERE id = ?"
-        conn.execute(query, values)
-
-        conn.commit()
+        with _db_lock:
+            conn.execute(query, values)
+            conn.commit()
     finally:
         close_connection(conn)
 
@@ -746,14 +863,15 @@ def update_ticket(ticket_id, updates, author="System"):
 def create_task(ticket_id, descripcion, responsable):
     conn = get_connection()
     try:
-        conn.execute(
-            """
-            INSERT INTO tasks (ticket_id, descripcion, responsable, estado)
-            VALUES (?, ?, ?, 'PENDIENTE')
-        """,
-            (ticket_id, descripcion, responsable),
-        )
-        conn.commit()
+        with _db_lock:
+            conn.execute(
+                """
+                INSERT INTO tasks (ticket_id, descripcion, responsable, estado)
+                VALUES (?, ?, ?, 'PENDIENTE')
+            """,
+                (ticket_id, descripcion, responsable),
+            )
+            conn.commit()
     finally:
         close_connection(conn)
 
@@ -761,9 +879,9 @@ def create_task(ticket_id, descripcion, responsable):
 def get_tasks_for_ticket(ticket_id):
     conn = get_connection()
     try:
-        return pd.read_sql_query(
-            "SELECT * FROM tasks WHERE ticket_id = ?", conn, params=(ticket_id,)
-        )
+        cols = ", ".join(ALLOWED_COLUMNS["tasks"])
+        query = f"SELECT {cols} FROM tasks WHERE ticket_id = ?"
+        return pd.read_sql_query(query, conn, params=(ticket_id,))
     finally:
         close_connection(conn)
 
@@ -771,8 +889,11 @@ def get_tasks_for_ticket(ticket_id):
 def update_task_status(task_id, new_status):
     conn = get_connection()
     try:
-        conn.execute("UPDATE tasks SET estado = ? WHERE id = ?", (new_status, task_id))
-        conn.commit()
+        with _db_lock:
+            conn.execute(
+                "UPDATE tasks SET estado = ? WHERE id = ?", (new_status, task_id)
+            )
+            conn.commit()
     finally:
         close_connection(conn)
 
@@ -781,8 +902,15 @@ def get_tasks_by_user(user_name):
     """Retorna tareas asignadas a un usuario específico."""
     conn = get_connection()
     try:
+        cols_tasks = ", ".join([f"t.{c}" for c in ALLOWED_COLUMNS["tasks"]])
+        query = f"""
+            SELECT {cols_tasks}, tk.titulo as ticket_titulo 
+            FROM tasks t 
+            JOIN tickets tk ON t.ticket_id = tk.id 
+            WHERE t.responsable = ? AND t.estado != 'COMPLETADA'
+        """
         return pd.read_sql_query(
-            "SELECT t.*, tk.titulo as ticket_titulo FROM tasks t JOIN tickets tk ON t.ticket_id = tk.id WHERE t.responsable = ? AND t.estado != 'COMPLETADA'",
+            query,
             conn,
             params=(user_name,),
         )
