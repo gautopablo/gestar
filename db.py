@@ -135,9 +135,19 @@ def _get_cached_sql_conn(conn_str):
             else:
                 conn_str += f";Driver={{{best_driver}}}"
 
-            # Si es Driver 18, suele requerir TrustServerCertificate=yes
-            if "Driver 18" in best_driver and "TrustServerCertificate" not in conn_str:
-                conn_str += ";TrustServerCertificate=yes;"
+            # Si es Driver 18, requiere ajustes específicos para Azure SQL en Linux
+            if "Driver 18" in best_driver:
+                if "TrustServerCertificate" not in conn_str:
+                    conn_str += ";TrustServerCertificate=yes;"
+
+                # Forzar Encrypt=yes y eliminar cualquier conflicto con Encrypt=no/0
+                if "Encrypt" not in conn_str:
+                    conn_str += ";Encrypt=yes;"
+                else:
+                    # Reemplazar Encrypt=no, Encrypt=0 o Encrypt=false por Encrypt=yes
+                    conn_str = re.sub(
+                        r"(?i)Encrypt=(no|0|false)", "Encrypt=yes", conn_str
+                    )
 
         return pyodbc.connect(conn_str)
 
