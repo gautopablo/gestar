@@ -5,6 +5,8 @@ import streamlit as st
 import os
 import threading
 import logging
+import time
+import re
 
 # Configurar logging básico para capturar errores silenciosos
 logging.basicConfig(level=logging.INFO)
@@ -14,10 +16,6 @@ try:
     import pyodbc
 except ImportError:
     pyodbc = None
-try:
-    import pymssql
-except ImportError:
-    pymssql = None
 from datetime import datetime, timezone
 from models import (
     CREATE_TICKETS_TABLE,
@@ -80,6 +78,24 @@ def _parse_conn_str(conn_str):
     return parts
 
 
+def _mask_conn_str(conn_str):
+    return re.sub(r"(?i)(Pwd|Password)\s*=\s*[^;]*", r"\1=***", conn_str)
+
+
+def _normalize_bool_attr(conn_str, key):
+    pattern = rf"(?i){key}\s*=\s*(true|false|0|1|yes|no)"
+
+    def _repl(match):
+        val = match.group(1).lower()
+        if val in ("true", "1", "yes"):
+            return f"{key}=yes"
+        if val in ("false", "0", "no"):
+            return f"{key}=no"
+        return match.group(0)
+
+    return re.sub(pattern, _repl, conn_str)
+
+
 @st.cache_resource(show_spinner=False)
 def _get_cached_sql_conn(conn_str):
     """
@@ -87,37 +103,11 @@ def _get_cached_sql_conn(conn_str):
     """
     import re
 
-    # 1. Intentar con pymssql primero (no usa ODBC, es más directo en Linux)
-    if pymssql:
-        try:
-            cfg = _parse_conn_str(conn_str)
-            server_raw = cfg.get("server", "")
-            server = server_raw.replace("tcp:", "").strip()
-            port = 1433
-            if "," in server:
-                server, port_str = server.split(",", 1)
-                try:
-                    port = int(port_str)
-                except ValueError:
-                    port = 1433
-            user = cfg.get("uid") or cfg.get("user id") or cfg.get("user")
-            password = cfg.get("pwd") or cfg.get("password")
-            database = cfg.get("database")
-            if server and user and password and database:
-                conn = pymssql.connect(
-                    server=server,
-                    user=user,
-                    password=password,
-                    database=database,
-                    port=port,
-                    tds_version="7.4",
-                )
-                return _PymssqlConnWrapper(conn)
-        except Exception as e:
-            logger.error(f"Error conectando con pymssql: {e}")
-            pass  # Fallback a pyodbc if pymssql fails
+    # Normalizar valores booleanos inválidos para ODBC Driver 18
+    conn_str = _normalize_bool_attr(conn_str, "Encrypt")
+    conn_str = _normalize_bool_attr(conn_str, "TrustServerCertificate")
 
-    # 2. Si falló pymssql, usar pyodbc con detección dinámica de drivers
+    # Usar pyodbc con detección dinámica de drivers
     if pyodbc:
         # Detectar drivers instalados en el sistema (ej: 'ODBC Driver 18 for SQL Server')
         available_drivers = pyodbc.drivers()
@@ -149,54 +139,23 @@ def _get_cached_sql_conn(conn_str):
                         r"(?i)Encrypt=(no|0|false)", "Encrypt=yes", conn_str
                     )
 
-        return pyodbc.connect(conn_str)
+        last_err = None
+        for attempt in range(3):
+            try:
+                return pyodbc.connect(conn_str)
+            except Exception as e:
+                last_err = e
+                masked = _mask_conn_str(conn_str)
+                logger.error(
+                    f"Error conectando con pyodbc (intento {attempt + 1}/3). Driver={sql_drivers[-1] if sql_drivers else 'N/A'}; ConnStr={masked}; Error={e}"
+                )
+                time.sleep(0.5 * (2**attempt))
+        if last_err:
+            raise last_err
 
     raise RuntimeError(
-        "No hay drivers disponibles (pymssql o pyodbc) para conectar a SQL."
+        "No hay drivers disponibles (pyodbc) para conectar a SQL."
     )
-
-
-def _adapt_query_for_pymssql(query):
-    return query.replace("?", "%s")
-
-
-class _PymssqlCursorWrapper:
-    def __init__(self, cursor):
-        self._cursor = cursor
-
-    def execute(self, query, params=None):
-        query = _adapt_query_for_pymssql(query)
-        if params is None:
-            return self._cursor.execute(query)
-        return self._cursor.execute(query, params)
-
-    def executemany(self, query, params_seq):
-        query = _adapt_query_for_pymssql(query)
-        return self._cursor.executemany(query, params_seq)
-
-    def __getattr__(self, name):
-        return getattr(self._cursor, name)
-
-
-class _PymssqlConnWrapper:
-    def __init__(self, conn):
-        self._conn = conn
-
-    def cursor(self, *args, **kwargs):
-        return _PymssqlCursorWrapper(self._conn.cursor(*args, **kwargs))
-
-    def execute(self, query, params=None):
-        cur = self.cursor()
-        return cur.execute(query, params)
-
-    def commit(self):
-        return self._conn.commit()
-
-    def close(self):
-        return self._conn.close()
-
-    def __getattr__(self, name):
-        return getattr(self._conn, name)
 
 
 def _is_sql_server_conn(conn):
@@ -243,7 +202,13 @@ def get_connection():
 
     if conn_str:
         try:
-            return _get_cached_sql_conn(conn_str)
+            conn = _get_cached_sql_conn(conn_str)
+            try:
+                conn.execute("SELECT 1")
+            except Exception:
+                _get_cached_sql_conn.clear()
+                conn = _get_cached_sql_conn(conn_str)
+            return conn
         except Exception as e:
             st.warning(
                 f"No se pudo conectar a Azure SQL, usando SQLite local. Error: {e}"
