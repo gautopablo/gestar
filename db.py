@@ -60,6 +60,15 @@ ALLOWED_COLUMNS = {
     ],
 }
 
+MASTER_CATALOGS = {
+    "areas": "Areas",
+    "divisiones": "Divisiones",
+    "plantas": "Plantas",
+    "prioridades": "Prioridades",
+    "roles": "Roles",
+    "categorias": "Categorias",
+}
+
 
 def get_now_utc():
     """Retorna el timestamp actual en UTC."""
@@ -153,9 +162,7 @@ def _get_cached_sql_conn(conn_str):
         if last_err:
             raise last_err
 
-    raise RuntimeError(
-        "No hay drivers disponibles (pyodbc) para conectar a SQL."
-    )
+    raise RuntimeError("No hay drivers disponibles (pyodbc) para conectar a SQL.")
 
 
 def _is_sql_server_conn(conn):
@@ -191,15 +198,207 @@ def _get_lastrowid(cursor, conn):
     return None
 
 
+def _ensure_master_tables(conn, is_sql_server):
+    cur = conn.cursor()
+    if is_sql_server:
+        cur.execute(
+            """
+            IF OBJECT_ID('master_catalogs','U') IS NULL
+            CREATE TABLE master_catalogs (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                code NVARCHAR(100) NOT NULL,
+                label NVARCHAR(255) NOT NULL,
+                is_active BIT NOT NULL DEFAULT 1,
+                created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
+            );
+            """
+        )
+        cur.execute(
+            """
+            IF OBJECT_ID('master_catalog_items','U') IS NULL
+            CREATE TABLE master_catalog_items (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                catalog_id INT NOT NULL,
+                code NVARCHAR(200) NULL,
+                label NVARCHAR(255) NOT NULL,
+                sort_order INT NOT NULL DEFAULT 0,
+                is_active BIT NOT NULL DEFAULT 1,
+                parent_item_id INT NULL,
+                created_at DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+                CONSTRAINT FK_master_items_catalog
+                    FOREIGN KEY (catalog_id) REFERENCES master_catalogs(id),
+                CONSTRAINT FK_master_items_parent
+                    FOREIGN KEY (parent_item_id) REFERENCES master_catalog_items(id)
+            );
+            """
+        )
+        cur.execute(
+            """
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = 'UX_master_catalogs_code'
+                AND object_id = OBJECT_ID('master_catalogs')
+            )
+                CREATE UNIQUE INDEX UX_master_catalogs_code ON master_catalogs(code);
+            """
+        )
+        cur.execute(
+            """
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = 'IX_master_items_lookup'
+                AND object_id = OBJECT_ID('master_catalog_items')
+            )
+                CREATE INDEX IX_master_items_lookup
+                ON master_catalog_items(catalog_id, is_active, sort_order, label);
+            """
+        )
+    else:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS master_catalogs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                code TEXT NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS master_catalog_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                catalog_id INTEGER NOT NULL,
+                code TEXT,
+                label TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                parent_item_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(catalog_id) REFERENCES master_catalogs(id),
+                FOREIGN KEY(parent_item_id) REFERENCES master_catalog_items(id)
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS IX_master_items_lookup
+            ON master_catalog_items(catalog_id, is_active, sort_order, label);
+            """
+        )
+
+
+def _ensure_catalog(cur, code, label):
+    cur.execute("SELECT id FROM master_catalogs WHERE code = ?", (code,))
+    row = cur.fetchone()
+    if row:
+        return int(row[0])
+    cur.execute(
+        "INSERT INTO master_catalogs (code, label, is_active) VALUES (?, ?, 1)",
+        (code, label),
+    )
+    cur.execute("SELECT id FROM master_catalogs WHERE code = ?", (code,))
+    return int(cur.fetchone()[0])
+
+
+def _ensure_catalog_item(cur, catalog_id, label, sort_order, parent_item_id=None):
+    if parent_item_id is None:
+        cur.execute(
+            """
+            SELECT id FROM master_catalog_items
+            WHERE catalog_id = ? AND label = ? AND parent_item_id IS NULL
+            """,
+            (catalog_id, label),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id FROM master_catalog_items
+            WHERE catalog_id = ? AND label = ? AND parent_item_id = ?
+            """,
+            (catalog_id, label, parent_item_id),
+        )
+    row = cur.fetchone()
+    if row:
+        item_id = int(row[0])
+        cur.execute(
+            """
+            UPDATE master_catalog_items
+            SET sort_order = ?, is_active = 1
+            WHERE id = ?
+            """,
+            (sort_order, item_id),
+        )
+        return item_id
+
+    cur.execute(
+        """
+        INSERT INTO master_catalog_items (catalog_id, label, sort_order, is_active, parent_item_id)
+        VALUES (?, ?, ?, 1, ?)
+        """,
+        (catalog_id, label, sort_order, parent_item_id),
+    )
+    if parent_item_id is None:
+        cur.execute(
+            """
+            SELECT id FROM master_catalog_items
+            WHERE catalog_id = ? AND label = ? AND parent_item_id IS NULL
+            """,
+            (catalog_id, label),
+        )
+    else:
+        cur.execute(
+            """
+            SELECT id FROM master_catalog_items
+            WHERE catalog_id = ? AND label = ? AND parent_item_id = ?
+            """,
+            (catalog_id, label, parent_item_id),
+        )
+    return int(cur.fetchone()[0])
+
+
+def _seed_master_data(conn):
+    from models import (
+        AREAS,
+        CATEGORIAS,
+        DIVISIONES,
+        PLANTAS,
+        PRIORIDADES,
+        ROLES,
+        SUBCATEGORIAS,
+    )
+
+    cur = conn.cursor()
+    catalog_values = {
+        "areas": AREAS,
+        "divisiones": DIVISIONES,
+        "plantas": PLANTAS,
+        "prioridades": PRIORIDADES,
+        "roles": ROLES,
+    }
+    for code, values in catalog_values.items():
+        catalog_id = _ensure_catalog(cur, code, MASTER_CATALOGS[code])
+        for idx, label in enumerate(values):
+            _ensure_catalog_item(cur, catalog_id, label, idx)
+
+    categorias_id = _ensure_catalog(cur, "categorias", MASTER_CATALOGS["categorias"])
+    categoria_item_ids = {}
+    for idx, categoria in enumerate(CATEGORIAS):
+        item_id = _ensure_catalog_item(cur, categorias_id, categoria, idx)
+        categoria_item_ids[categoria] = item_id
+
+    for categoria, subcategorias in SUBCATEGORIAS.items():
+        parent_id = categoria_item_ids.get(categoria)
+        if not parent_id:
+            continue
+        for idx, sub in enumerate(subcategorias):
+            _ensure_catalog_item(cur, categorias_id, sub, idx, parent_item_id=parent_id)
+
+
 @st.cache_resource(show_spinner="Conectando a DB...")
-def get_connection():
+def _get_connection_cached(conn_str):
     """Crea y retorna una conexión a la base de datos (Azure SQL o SQLite)."""
-    # 1. Intentar conexión a Azure SQL via Environment Variables (Recomendado para Azure) o Streamlit Secrets
-    conn_str = os.environ.get("AZURE_SQL_CONNECTION_STRING")
-
-    if not conn_str and "azure_sql" in st.secrets:
-        conn_str = st.secrets["azure_sql"].get("connection_string")
-
     if conn_str:
         try:
             conn = _get_cached_sql_conn(conn_str)
@@ -210,15 +409,29 @@ def get_connection():
                 conn = _get_cached_sql_conn(conn_str)
             return conn
         except Exception as e:
-            st.warning(
-                f"No se pudo conectar a Azure SQL, usando SQLite local. Error: {e}"
-            )
+            # Silenciamos el warning en la UI para evitar mensajes redundantes.
+            # El error ya queda registrado en los logs del servidor.
+            logger.info(f"Azure SQL no disponible, usando SQLite: {e}")
 
-    # 2. Fallback a SQLite local
+    # Fallback a SQLite local
     conn = sqlite3.connect(DB_NAME, check_same_thread=False)
     # Habilitar foreign keys (Solo SQLite)
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def get_connection():
+    """
+    Wrapper para resolver la cadena de conexión.
+    Se pasa como argumento cacheado para evitar que quede fija una conexión
+    SQLite si la app arrancó sin variables de entorno y luego se reconfigura.
+    """
+    conn_str = os.environ.get("AZURE_SQL_CONNECTION_STRING")
+
+    if not conn_str and "azure_sql" in st.secrets:
+        conn_str = st.secrets["azure_sql"].get("connection_string")
+
+    return _get_connection_cached(conn_str or "")
 
 
 def init_db():
@@ -305,6 +518,10 @@ def init_db():
                 conn.execute(CREATE_TICKET_LOG_TABLE)
                 conn.execute(CREATE_USERS_TABLE)
 
+            # Crear y sembrar tablas maestras (idempotente)
+            _ensure_master_tables(conn, is_sql_server)
+            _seed_master_data(conn)
+
             # MIGRATION: Check if subcategoria exists in tickets
             if not is_sql_server:
                 cur = conn.cursor()
@@ -388,6 +605,7 @@ def init_db():
                 populate_samples(conn)
 
             conn.commit()
+            clear_master_cache()
         st.session_state["db_initialized"] = True
     finally:
         close_connection(conn)
@@ -625,6 +843,182 @@ def get_tickets(filters=None):
 
         df = pd.read_sql_query(query, conn, params=params)
         return df
+    finally:
+        close_connection(conn)
+
+
+@st.cache_data(ttl=600)
+def get_master_items(catalog_code, include_inactive=False):
+    """Retorna labels de un catálogo maestro ordenados."""
+    conn = get_connection()
+    try:
+        query = """
+            SELECT i.label
+            FROM master_catalog_items i
+            INNER JOIN master_catalogs c ON c.id = i.catalog_id
+            WHERE c.code = ?
+              AND i.parent_item_id IS NULL
+        """
+        params = [catalog_code]
+        if not include_inactive:
+            query += " AND c.is_active = 1 AND i.is_active = 1"
+        query += " ORDER BY i.sort_order ASC, i.label ASC"
+        df = pd.read_sql_query(query, conn, params=params)
+        return df["label"].tolist() if not df.empty else []
+    finally:
+        close_connection(conn)
+
+
+@st.cache_data(ttl=600)
+def get_subcategories_map(include_inactive=False):
+    """Retorna mapa categoria -> [subcategorias]."""
+    conn = get_connection()
+    try:
+        query = """
+            SELECT p.label AS categoria, c.label AS subcategoria
+            FROM master_catalog_items c
+            INNER JOIN master_catalog_items p ON p.id = c.parent_item_id
+            INNER JOIN master_catalogs cat ON cat.id = c.catalog_id
+            WHERE cat.code = 'categorias'
+        """
+        if not include_inactive:
+            query += (
+                " AND cat.is_active = 1 AND p.is_active = 1 AND c.is_active = 1"
+            )
+        query += " ORDER BY p.sort_order ASC, c.sort_order ASC, c.label ASC"
+
+        df = pd.read_sql_query(query, conn)
+        result = {}
+        if df.empty:
+            return result
+        for _, row in df.iterrows():
+            result.setdefault(row["categoria"], []).append(row["subcategoria"])
+        return result
+    finally:
+        close_connection(conn)
+
+
+def clear_master_cache():
+    get_master_items.clear()
+    get_subcategories_map.clear()
+
+
+@st.cache_data(ttl=600)
+def get_master_catalogs():
+    """Retorna catálogo de maestras disponibles."""
+    conn = get_connection()
+    try:
+        query = """
+            SELECT id, code, label, is_active
+            FROM master_catalogs
+            ORDER BY label ASC
+        """
+        return pd.read_sql_query(query, conn)
+    finally:
+        close_connection(conn)
+
+
+@st.cache_data(ttl=600)
+def get_master_items_admin(catalog_code, parent_item_id=None):
+    """Retorna items de maestra para administración."""
+    conn = get_connection()
+    try:
+        query = """
+            SELECT i.id, i.label, i.sort_order, i.is_active, i.parent_item_id,
+                   p.label AS parent_label
+            FROM master_catalog_items i
+            INNER JOIN master_catalogs c ON c.id = i.catalog_id
+            LEFT JOIN master_catalog_items p ON p.id = i.parent_item_id
+            WHERE c.code = ?
+        """
+        params = [catalog_code]
+        if parent_item_id is None:
+            query += " AND i.parent_item_id IS NULL"
+        else:
+            query += " AND i.parent_item_id = ?"
+            params.append(parent_item_id)
+        query += " ORDER BY i.sort_order ASC, i.label ASC"
+        return pd.read_sql_query(query, conn, params=params)
+    finally:
+        close_connection(conn)
+
+
+def clear_master_admin_cache():
+    get_master_catalogs.clear()
+    get_master_items_admin.clear()
+
+
+def create_master_item(catalog_code, label, sort_order=0, parent_item_id=None):
+    """Crea un item maestro si no existe."""
+    if not label or not str(label).strip():
+        raise ValueError("Label de maestra vacío.")
+
+    label = str(label).strip()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        with _db_lock:
+            cur.execute("SELECT id FROM master_catalogs WHERE code = ?", (catalog_code,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"Catálogo inexistente: {catalog_code}")
+            catalog_id = int(row[0])
+
+            if parent_item_id is None:
+                cur.execute(
+                    """
+                    SELECT id FROM master_catalog_items
+                    WHERE catalog_id = ? AND label = ? AND parent_item_id IS NULL
+                    """,
+                    (catalog_id, label),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id FROM master_catalog_items
+                    WHERE catalog_id = ? AND label = ? AND parent_item_id = ?
+                    """,
+                    (catalog_id, label, parent_item_id),
+                )
+
+            if cur.fetchone():
+                return
+
+            cur.execute(
+                """
+                INSERT INTO master_catalog_items
+                (catalog_id, label, sort_order, is_active, parent_item_id)
+                VALUES (?, ?, ?, 1, ?)
+                """,
+                (catalog_id, label, int(sort_order), parent_item_id),
+            )
+            conn.commit()
+        clear_master_cache()
+        clear_master_admin_cache()
+    finally:
+        close_connection(conn)
+
+
+def update_master_item(item_id, updates):
+    """Actualiza un item de maestra."""
+    if not updates:
+        return
+    allowed = {"label", "sort_order", "is_active", "parent_item_id"}
+    filtered = {k: v for k, v in updates.items() if k in allowed}
+    if not filtered:
+        return
+
+    conn = get_connection()
+    try:
+        set_clause = ", ".join([f"{k} = ?" for k in filtered.keys()])
+        values = list(filtered.values())
+        values.append(item_id)
+        query = f"UPDATE master_catalog_items SET {set_clause} WHERE id = ?"
+        with _db_lock:
+            conn.execute(query, values)
+            conn.commit()
+        clear_master_cache()
+        clear_master_admin_cache()
     finally:
         close_connection(conn)
 

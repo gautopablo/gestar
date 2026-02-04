@@ -55,186 +55,17 @@ if "v2_tid" in st.query_params:
 
 # --- CSS PERSONALIZADO (Look & Feel Taranto 2026) ---
 def local_css():
-    st.markdown(
-        """
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
-<style>
-        @import url('https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&family=Raleway:wght@600;700&display=swap');
-
-        html, body, [class*="css"] {
-            font-family: 'Lato', sans-serif;
-            color: #444;
-        }
-
-        h1, h2, h3, .raleway {
-            font-family: 'Raleway', sans-serif;
-            font-weight: 700;
-        }
-
-        .bi {
-            vertical-align: -0.125em;
-            margin-right: 0.35rem;
-        }
-
-        .block-container {
-            padding-top: 0.75rem;
-        }
-
-        .top-icon {
-            font-size: 18px;
-            color: #156099;
-            padding-top: 6px;
-        }
-
-        /* Top Bar Custom */
-        .taranto-header {
-            background-color: white;
-            padding: 0.5rem 1rem;
-            border-bottom: 3px solid #d52e25;
-            margin-bottom: 1.5rem;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
-        /* Botones de Navegación */
-        div.stButton > button {
-            border-radius: 4px;
-            font-family: 'Raleway', sans-serif;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-weight: 700;
-            transition: all 0.3s;
-            white-space: nowrap;
-        }
-
-        /* Botón primario Rojo Taranto */
-        div.stButton > button[kind="primary"] {
-            background-color: #d52e25;
-            border: none;
-            color: white;
-        }
-
-        /* Tables and Dataframes */
-        .stDataFrame {
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-        }
-
-        /* Compact rows in custom grid:
-           reduce Streamlit's default row gap without overriding all markdown/layout spacing */
-        .v2-row-cell {
-            line-height: 1.0;
-            padding: 0;
-            margin: 0;
-            display: block;
-        }
-        .v2-row-cell a {
-            line-height: 1.0;
-            padding: 0;
-            margin: 0;
-            display: inline-block;
-        }
-        /* Apply row spacing/separator directly on the row container */
-        div[data-testid="stHorizontalBlock"]:has(.v2-row-cell) {
-            gap: 0 !important;
-            padding-top: 0px !important;
-            padding-bottom: 18px !important;
-            border-bottom: 1px solid #e0e0e0;
-        }
-
-        /* Cards / Containers */
-        .v2-card {
-            background-color: white;
-            padding: 1.5rem;
-            border-radius: 10px;
-            border: 1px solid #eee;
-            box-shadow: 0 2px 15px rgba(0,0,0,0.04);
-            margin-bottom: 1rem;
-        }
-
-        /* Sidebar / Filters Column */
-        [data-testid="stVerticalBlock"] > div:has(.v2-sidebar-header) {
-            background-color: #f8f9fa;
-            padding: 1rem;
-            border-radius: 8px;
-        }
-
-        /* Hide default header */
-        header {visibility: hidden;}
-        footer {visibility: hidden;}
-        
-        /* Ajuste de Tabs */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 10px;
-        }
-        .stTabs [data-baseweb="tab"] {
-            background-color: #f1f1f1;
-            border-radius: 4px 4px 0 0;
-            padding: 10px 20px;
-            font-weight: 600;
-        }
-        .stTabs [aria-selected="true"] {
-            background-color: #156099 !important;
-            color: white !important;
-        }
-
-        /* User Badge in Top Bar */
-        .user-badge {
-            background-color: #f8f9fa;
-            padding: 5px 15px;
-            border-radius: 20px;
-            border: 1px solid #ddd;
-            font-size: 14px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        /* Active Nav Button */
-        .active-nav button {
-            background-color: #156099 !important;
-            color: white !important;
-            border: none;
-        }
-
-        /* Botón con apariencia de Link (Selector Robusto) */
-        div[data-testid="column"]:has(.link-style) button {
-            background-color: transparent !important;
-            border: none !important;
-            color: #156099 !important;
-            text-decoration: underline !important;
-            text-align: left !important;
-            padding: 0 !important;
-            font-weight: 400 !important;
-            text-transform: none !important;
-            letter-spacing: normal !important;
-            height: auto !important;
-            min-height: 0 !important;
-            box-shadow: none !important;
-            display: inline-block !important;
-            width: auto !important;
-        }
-        div[data-testid="column"]:has(.link-style) button:hover {
-            color: #d52e25 !important;
-            background-color: transparent !important;
-            text-decoration: underline !important;
-        }
-        div[data-testid="column"]:has(.link-style) button:active {
-            color: #d52e25 !important;
-            background-color: transparent !important;
-        }
-        div[data-testid="column"]:has(.link-style) button:focus {
-            box-shadow: none !important;
-            background-color: transparent !important;
-            outline: none !important;
-        }
-
-        </style>
-    """,
-        unsafe_allow_html=True,
-    )
+    try:
+        with open("style_v2.css", "r", encoding="utf-8") as f:
+            css = f.read()
+        # Usamos un solo bloque de markdown con el HTML de estilo envuelto cuidadosamente
+        st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+        st.markdown(
+            '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">',
+            unsafe_allow_html=True,
+        )
+    except Exception as e:
+        st.error(f"Error cargando CSS: {e}")
 
 
 local_css()
@@ -257,6 +88,12 @@ user_names = df_users["nombre_completo"].tolist()
 if not user_names:
     user_names = ["Invitado"]
 
+master_areas = db.get_master_items("areas") or models.AREAS
+master_prioridades = db.get_master_items("prioridades") or models.PRIORIDADES
+master_roles = db.get_master_items("roles") or models.ROLES
+master_categorias = db.get_master_items("categorias") or models.CATEGORIAS
+master_subcategorias = db.get_subcategories_map() or models.SUBCATEGORIAS
+
 # --- FUNCIONES DE INTERFAZ REFACTORIZADAS ---
 
 
@@ -269,8 +106,8 @@ def show_create_ticket(u_names, c_user):
         col1, col2 = st.columns(2)
         with col1:
             titulo = st.text_input("Título del Ticket*")
-            area = st.selectbox("Área Destino", models.AREAS)
-            urgencia = st.selectbox("Urgencia Sugerida", models.PRIORIDADES)
+            area = st.selectbox("Área Destino", master_areas)
+            urgencia = st.selectbox("Urgencia Sugerida", master_prioridades)
             solicitante = st.selectbox(
                 "Solicitante*",
                 u_names,
@@ -278,8 +115,8 @@ def show_create_ticket(u_names, c_user):
             )
 
         with col2:
-            categoria = st.selectbox("Categoría", models.CATEGORIAS)
-            sub_options = models.SUBCATEGORIAS.get(categoria, [])
+            categoria = st.selectbox("Categoría", master_categorias)
+            sub_options = master_subcategorias.get(categoria, [])
             subcategoria = st.selectbox("Subcategoría", sub_options)
             division = st.selectbox("División", models.DIVISIONES)
             planta = st.selectbox("Planta", models.PLANTAS)
@@ -319,7 +156,7 @@ def show_simple_request(c_user):
     )
     with st.form("v2_simple_request", clear_on_submit=True):
         titulo = st.text_input("Título del Ticket*")
-        area = st.selectbox("Área Destino", models.AREAS)
+        area = st.selectbox("Área Destino", master_areas)
         descripcion = st.text_area("Descripción detallada*")
 
         if st.form_submit_button("CREAR SOLICITUD", type="primary"):
@@ -502,7 +339,7 @@ def show_ticket_tray(c_area, c_role, c_user):
         render_v2_table(cached_get_tickets(_normalize_filters(f)), "asig")
 
     with t_proc:
-        f_area = st.selectbox("Área", ["Todas"] + models.AREAS, key="v2_proc_area")
+        f_area = st.selectbox("Área", ["Todas"] + master_areas, key="v2_proc_area")
         f = {"estado": ["ASIGNADO", "EN PROCESO"]}
         if f_area != "Todas":
             f["area_destino"] = f_area
@@ -565,9 +402,9 @@ def show_ticket_detail(c_user, c_role, c_area, u_names):
             with col1:
                 prio = st.selectbox(
                     "Prioridad",
-                    models.PRIORIDADES,
-                    index=models.PRIORIDADES.index(ticket["prioridad"])
-                    if ticket["prioridad"] in models.PRIORIDADES
+                    master_prioridades,
+                    index=master_prioridades.index(ticket["prioridad"])
+                    if ticket["prioridad"] in master_prioridades
                     else 1,
                 )
             with col2:
@@ -679,8 +516,8 @@ def show_admin():
             with st.form("v2_add_user"):
                 n = st.text_input("Nombre*")
                 e = st.text_input("Email")
-                r = st.selectbox("Rol", models.ROLES)
-                a = st.selectbox("Área", models.AREAS)
+                r = st.selectbox("Rol", master_roles)
+                a = st.selectbox("Área", master_areas)
                 if st.form_submit_button("GUARDAR"):
                     if n:
                         db.create_user(
@@ -694,8 +531,8 @@ def show_admin():
             column_config={
                 "id": None,
                 "nombre_completo": st.column_config.TextColumn("Nombre", disabled=True),
-                "rol": st.column_config.SelectboxColumn("Rol", options=models.ROLES),
-                "area": st.column_config.SelectboxColumn("Área", options=models.AREAS),
+                "rol": st.column_config.SelectboxColumn("Rol", options=master_roles),
+                "area": st.column_config.SelectboxColumn("Área", options=master_areas),
             },
             hide_index=True,
             use_container_width=True,
@@ -738,7 +575,202 @@ def show_admin():
                     st.info("No se detectaron cambios.")
                 st.rerun()
     with tab_a:
-        st.info("Gestión de tablas maestras en desarrollo.")
+        st.markdown("#### Gestión de Maestras")
+        df_catalogs = db.get_master_catalogs()
+        if df_catalogs.empty:
+            st.warning("No hay catálogos maestros disponibles.")
+            return
+
+        catalog_labels = df_catalogs["label"].tolist()
+        selected_catalog_label = st.selectbox(
+            "Catálogo",
+            catalog_labels,
+            key="v2_master_catalog_selector",
+        )
+        selected_catalog_code = (
+            df_catalogs[df_catalogs["label"] == selected_catalog_label]["code"]
+            .iloc[0]
+            .strip()
+        )
+
+        def _apply_master_updates(base_df, edited_df):
+            if "id" not in edited_df.columns:
+                st.error("No se pudo leer ID de maestra.")
+                return 0
+            editable_cols = ["label", "sort_order", "is_active"]
+            base_by_id = base_df.set_index("id")
+            edit_by_id = edited_df.set_index("id")
+            changes = 0
+            for item_id in edit_by_id.index.intersection(base_by_id.index):
+                updates = {}
+                for col in editable_cols:
+                    if col not in edit_by_id.columns:
+                        continue
+                    old_val = base_by_id.at[item_id, col]
+                    new_val = edit_by_id.at[item_id, col]
+                    if str(old_val) != str(new_val):
+                        if col == "sort_order":
+                            new_val = int(new_val)
+                        if col == "is_active":
+                            new_val = 1 if bool(new_val) else 0
+                        updates[col] = new_val
+                if updates:
+                    db.update_master_item(int(item_id), updates)
+                    changes += 1
+            return changes
+
+        if selected_catalog_code != "categorias":
+            with st.form("v2_master_add_item"):
+                c1, c2 = st.columns([3, 1])
+                new_label = c1.text_input("Nuevo valor")
+                new_order = c2.number_input(
+                    "Orden",
+                    min_value=0,
+                    value=0,
+                    step=1,
+                )
+                if st.form_submit_button("AGREGAR ITEM"):
+                    if new_label.strip():
+                        db.create_master_item(
+                            selected_catalog_code,
+                            new_label.strip(),
+                            int(new_order),
+                        )
+                        st.success("Item agregado.")
+                        st.rerun()
+                    else:
+                        st.error("El nombre no puede estar vacío.")
+
+            df_items = db.get_master_items_admin(selected_catalog_code)
+            if df_items.empty:
+                st.info("No hay items cargados en este catálogo.")
+            else:
+                df_edit_items = st.data_editor(
+                    df_items[["id", "label", "sort_order", "is_active"]],
+                    column_config={
+                        "id": None,
+                        "label": st.column_config.TextColumn("Valor"),
+                        "sort_order": st.column_config.NumberColumn(
+                            "Orden", min_value=0, step=1
+                        ),
+                        "is_active": st.column_config.CheckboxColumn("Activo"),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    key=f"v2_master_editor_{selected_catalog_code}",
+                )
+
+                if st.button("GUARDAR CAMBIOS MAESTRA", type="primary"):
+                    changed = _apply_master_updates(df_items, df_edit_items)
+                    if changed:
+                        st.success(f"Guardado ({changed})")
+                    else:
+                        st.info("No se detectaron cambios.")
+                    st.rerun()
+        else:
+            st.markdown("##### Categorías")
+            with st.form("v2_add_categoria"):
+                c1, c2 = st.columns([3, 1])
+                cat_label = c1.text_input("Nueva categoría")
+                cat_order = c2.number_input("Orden categoría", min_value=0, value=0)
+                if st.form_submit_button("AGREGAR CATEGORÍA"):
+                    if cat_label.strip():
+                        db.create_master_item(
+                            "categorias",
+                            cat_label.strip(),
+                            int(cat_order),
+                        )
+                        st.success("Categoría agregada.")
+                        st.rerun()
+                    else:
+                        st.error("La categoría no puede estar vacía.")
+
+            df_cats = db.get_master_items_admin("categorias")
+            df_edit_cats = st.data_editor(
+                df_cats[["id", "label", "sort_order", "is_active"]],
+                column_config={
+                    "id": None,
+                    "label": st.column_config.TextColumn("Categoría"),
+                    "sort_order": st.column_config.NumberColumn(
+                        "Orden", min_value=0, step=1
+                    ),
+                    "is_active": st.column_config.CheckboxColumn("Activo"),
+                },
+                hide_index=True,
+                use_container_width=True,
+                key="v2_master_editor_categorias",
+            )
+            if st.button("GUARDAR CATEGORÍAS", type="primary"):
+                changed = _apply_master_updates(df_cats, df_edit_cats)
+                if changed:
+                    st.success(f"Guardado ({changed})")
+                else:
+                    st.info("No se detectaron cambios.")
+                st.rerun()
+
+            st.markdown("##### Subcategorías")
+            if df_cats.empty:
+                st.info("Primero cargá una categoría.")
+            else:
+                cat_options = df_cats["label"].tolist()
+                selected_cat_label = st.selectbox(
+                    "Categoría padre",
+                    cat_options,
+                    key="v2_master_parent_categoria",
+                )
+                selected_cat_id = int(
+                    df_cats[df_cats["label"] == selected_cat_label]["id"].iloc[0]
+                )
+
+                with st.form("v2_add_subcategoria"):
+                    c1, c2 = st.columns([3, 1])
+                    sub_label = c1.text_input("Nueva subcategoría")
+                    sub_order = c2.number_input(
+                        "Orden subcategoría",
+                        min_value=0,
+                        value=0,
+                    )
+                    if st.form_submit_button("AGREGAR SUBCATEGORÍA"):
+                        if sub_label.strip():
+                            db.create_master_item(
+                                "categorias",
+                                sub_label.strip(),
+                                int(sub_order),
+                                parent_item_id=selected_cat_id,
+                            )
+                            st.success("Subcategoría agregada.")
+                            st.rerun()
+                        else:
+                            st.error("La subcategoría no puede estar vacía.")
+
+                df_sub = db.get_master_items_admin(
+                    "categorias",
+                    parent_item_id=selected_cat_id,
+                )
+                if df_sub.empty:
+                    st.info("No hay subcategorías para esta categoría.")
+                else:
+                    df_edit_sub = st.data_editor(
+                        df_sub[["id", "label", "sort_order", "is_active"]],
+                        column_config={
+                            "id": None,
+                            "label": st.column_config.TextColumn("Subcategoría"),
+                            "sort_order": st.column_config.NumberColumn(
+                                "Orden", min_value=0, step=1
+                            ),
+                            "is_active": st.column_config.CheckboxColumn("Activo"),
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                        key=f"v2_master_editor_subcat_{selected_cat_id}",
+                    )
+                    if st.button("GUARDAR SUBCATEGORÍAS", type="primary"):
+                        changed = _apply_master_updates(df_sub, df_edit_sub)
+                        if changed:
+                            st.success(f"Guardado ({changed})")
+                        else:
+                            st.info("No se detectaron cambios.")
+                        st.rerun()
 
 
 # --- SESSION & USER INFO ---
@@ -894,9 +926,7 @@ elif page == "MIS TAREAS":
     if tasks.empty:
         st.info("Sin tareas.")
     else:
-        df_tasks = tasks[
-            ["id", "ticket_id", "ticket_titulo", "descripcion", "estado"]
-        ]
+        df_tasks = tasks[["id", "ticket_id", "ticket_titulo", "descripcion", "estado"]]
         st.dataframe(
             df_tasks,
             hide_index=True,

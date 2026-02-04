@@ -15,3 +15,4 @@
 - opciones de busqueda en la grilla busqueda
 -columnas de la grilla: usuario responsable, solicitante, fecha creacion
 - los datos se mantienen?
+- App forzada a modo claro (base="light" en config.toml). La interfaz no cambia a modo oscuro automáticamente según el navegador.

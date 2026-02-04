@@ -1,0 +1,167 @@
+@import url("https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700&family=Raleway:wght@600;700&display=swap");
+
+/* --- Reset y Tipografía --- */
+html,
+body,
+[class*="css"] {
+  font-family: "Lato", sans-serif;
+  color: var(--text-color); /* Adaptable */
+}
+
+h1,
+h2,
+h3,
+.raleway {
+  font-family: "Raleway", sans-serif;
+  font-weight: 700;
+}
+
+.bi {
+  vertical-align: -0.125em;
+  margin-right: 0.35rem;
+}
+
+.block-container {
+  padding-top: 0.75rem;
+}
+
+/* --- Barra Superior (Top Bar) --- */
+.taranto-header {
+  background-color: var(--background-color); /* Adaptable */
+  padding: 0.5rem 1rem;
+  border-bottom: 3px solid #d52e25; /* Rojo fijo */
+  margin-bottom: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.top-icon {
+  font-size: 18px;
+  color: #156099; /* Azul institucional */
+  padding-top: 6px;
+}
+
+/* --- Botones --- */
+div.stButton > button {
+  border-radius: 4px;
+  font-family: "Raleway", sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 700;
+  transition: all 0.3s;
+  white-space: nowrap;
+}
+
+/* Botón primario Rojo Taranto */
+div.stButton > button[kind="primary"] {
+  background-color: #d52e25;
+  border: none;
+  color: white;
+}
+
+/* --- Contenedores y Tarjetas --- */
+.v2-card {
+  background-color: var(--background-color);
+  padding: 1.5rem;
+  border-radius: 10px;
+  border: 1px solid rgba(128, 128, 128, 0.2); /* Borde sutil */
+  box-shadow: 0 2px 15px rgba(0, 0, 0, 0.04);
+  margin-bottom: 1rem;
+}
+
+/* Sidebar / Filtros */
+[data-testid="stVerticalBlock"] > div:has(.v2-sidebar-header) {
+  background-color: var(--secondary-background-color);
+  padding: 1rem;
+  border-radius: 8px;
+}
+
+/* Badge de usuario */
+.user-badge {
+  background-color: var(--secondary-background-color);
+  padding: 5px 15px;
+  border-radius: 20px;
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* --- Tabs --- */
+.stTabs [data-baseweb="tab-list"] {
+  gap: 10px;
+}
+.stTabs [data-baseweb="tab"] {
+  background-color: var(--secondary-background-color);
+  border-radius: 4px 4px 0 0;
+  padding: 10px 20px;
+  font-weight: 600;
+}
+.stTabs [aria-selected="true"] {
+  background-color: #156099 !important;
+  color: white !important;
+}
+
+/* --- Tablas y Grillas --- */
+.stDataFrame {
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+.v2-row-cell {
+  line-height: 1;
+  padding: 0;
+  margin: 0;
+  display: block;
+}
+.v2-row-cell a {
+  line-height: 1;
+  padding: 0;
+  margin: 0;
+  display: inline-block;
+}
+div[data-testid="stHorizontalBlock"]:has(.v2-row-cell) {
+  gap: 0 !important;
+  padding-top: 0px !important;
+  padding-bottom: 18px !important;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+}
+
+/* --- Botón con apariencia de Link --- */
+div[data-testid="column"]:has(.link-style) button {
+  background-color: transparent !important;
+  border: none !important;
+  color: #156099 !important;
+  text-decoration: underline !important;
+  text-align: left !important;
+  padding: 0 !important;
+  font-weight: 400 !important;
+  text-transform: none !important;
+  letter-spacing: normal !important;
+  height: auto !important;
+  min-height: 0 !important;
+  box-shadow: none !important;
+  display: inline-block !important;
+  width: auto !important;
+}
+div[data-testid="column"]:has(.link-style) button:hover {
+  color: #d52e25 !important;
+  background-color: transparent !important;
+}
+
+/* --- Otros --- */
+.active-nav button {
+  background-color: #156099 !important;
+  color: white !important;
+  border: none;
+}
+
+header {
+  visibility: hidden;
+}
+footer {
+  visibility: hidden;
+}
